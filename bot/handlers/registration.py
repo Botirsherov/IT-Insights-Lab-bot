@@ -29,6 +29,12 @@ _TEXT_ONLY = filters.TEXT & ~filters.COMMAND
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/start — greet, branch on whether the user is already registered."""
+    if update.effective_chat.type != "private":
+        await update.message.reply_html(
+            "👋 To register, please message me in a private chat:\n"
+            f"→ @{(await context.bot.get_me()).username}"
+        )
+        return ConversationHandler.END
     u = update.effective_user
     cfg: Config = context.bot_data["config"]
     existing = db.get_user(u.id)
@@ -96,7 +102,8 @@ async def got_occupation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.edit_message_text(
         f"✅ Occupation: <b>{esc(choice)}</b>\n\n"
         "<b>Step 4/5 — Send a profile photo.</b>\n"
-        "<i>(a clear photo of you — it will be used on your intro card in the cohort group)</i>"
+        "<i>(a clear photo of you — it will be used on your intro card in the cohort group)</i>",
+        parse_mode=ParseMode.HTML,
     )
     return PHOTO
 
@@ -203,7 +210,10 @@ def register(application: Application) -> ConversationHandler:
             OCCUPATION_OTHER: [MessageHandler(_TEXT_ONLY, got_occupation_other)],
             PHOTO: [
                 MessageHandler(filters.PHOTO, got_photo),
-                MessageHandler(~filters.PHOTO, got_photo),
+                # catch-all for non-photo, non-command input (keeps /cancel working:
+                # state handlers are checked before fallbacks, so commands must be
+                # excluded here or the fallback below never fires)
+                MessageHandler(~filters.PHOTO & ~filters.COMMAND, got_photo),
             ],
             BIO: [MessageHandler(_TEXT_ONLY, got_bio)],
         },

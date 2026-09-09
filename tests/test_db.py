@@ -74,3 +74,29 @@ def test_csv_exports(temp_db):
     assert "Dan" in users_csv
     subs_csv = build_submissions_csv(db.iter_submissions_for_export()).decode("utf-8-sig")
     assert "SQL Joins" in subs_csv
+
+
+def test_delete_user_cascades_submissions(temp_db):
+    """Regression: delete_user used to hit the FK constraint and raise."""
+    db.register_user(user_id=5, username="e", full_name="Eve", city="Paris",
+                     occupation="Analyst", photo_file_id="p", bio="bio")
+    task_id = db.create_task(title="T", description="desc")
+    db.add_submission(user_id=5, task_id=task_id, kind="text", content="sol")
+
+    assert db.delete_user(5) is True
+    assert db.get_user(5) is None
+    assert db.count_submissions(user_id=5) == 0
+    # task and unrelated users are untouched
+    assert db.get_task(task_id) is not None
+    assert db.delete_user(999) is False
+
+
+def test_delete_task_cascades_submissions(temp_db):
+    db.register_user(user_id=6, username="f", full_name="Fay", city="Dublin",
+                     occupation="Student", photo_file_id="p", bio="bio")
+    task_id = db.create_task(title="T2", description="desc")
+    db.add_submission(user_id=6, task_id=task_id, kind="text", content="sol")
+
+    assert db.delete_task(task_id) is True
+    assert db.get_task(task_id) is None
+    assert db.count_submissions(task_id=task_id) == 0

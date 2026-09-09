@@ -10,6 +10,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from .. import db
@@ -27,16 +29,16 @@ def _is_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
     return user_id is not None and cfg.is_admin(user_id)
 
 
-def _deny(update: Update) -> None:
+async def _deny(update: Update) -> None:
     if update.message:
-        update.message.reply_html("⛔ This panel is for authorized admins only.")
+        await update.message.reply_html("⛔ This panel is for authorized admins only.")
     elif update.callback_query:
-        update.callback_query.answer("Not authorized.", show_alert=True)
+        await update.callback_query.answer("Not authorized.", show_alert=True)
 
 
 async def admin_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_admin(context, update.effective_user.id):
-        _deny(update)
+        await _deny(update)
         return
     await update.message.reply_html(
         "🛠 <b>IT Insights Lab — Admin Panel</b>\n\n"
@@ -52,7 +54,7 @@ async def admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     await query.edit_message_text(
         "🛠 <b>Admin Panel</b>\n\nChoose an action:",
@@ -65,7 +67,7 @@ async def admin_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     try:
         await query.message.delete()
@@ -77,7 +79,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
 
     per_task = db.count_submissions_per_task()
@@ -108,7 +110,7 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: 
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
 
     rows = db.list_users(offset=page * PAGE_SIZE, limit=PAGE_SIZE)
@@ -136,9 +138,12 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass  # already answered by the ban/unban caller re-rendering this view
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     user_id = int(query.data.split(":")[1])
     user = db.get_user(user_id)
@@ -163,14 +168,14 @@ async def admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
-    if not _is_admin(context, query.from_user.id):
-        _deny(update)
-        return
     user_id = int(query.data.split(":")[1])
-    if user_id in context.bot_data["config"].admin_ids:
-        await query.answer("You can't ban another admin.", show_alert=True)
+    if not _is_admin(context, query.from_user.id):
+        await _deny(update)
         return
+    try:
+        await query.answer()
+    except Exception:
+        pass
     db.set_user_status(user_id, "banned")
     await admin_user_detail(update, context)
 
@@ -179,7 +184,7 @@ async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     user_id = int(query.data.split(":")[1])
     db.set_user_status(user_id, "active")
@@ -190,7 +195,7 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     user_id = int(query.data.split(":")[1])
     db.delete_user(user_id)
@@ -201,7 +206,7 @@ async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     await query.edit_message_text(
         "📦 <b>Export Data</b>\n\nChoose what to export as CSV:",
@@ -214,7 +219,7 @@ async def admin_export_users(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     data = build_users_csv(db.iter_users_for_export())
     await context.bot.send_document(
@@ -229,7 +234,7 @@ async def admin_export_submissions(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     if not _is_admin(context, query.from_user.id):
-        _deny(update)
+        await _deny(update)
         return
     data = build_submissions_csv(db.iter_submissions_for_export())
     await context.bot.send_document(
@@ -238,6 +243,131 @@ async def admin_export_submissions(update: Update, context: ContextTypes.DEFAULT
         filename="submissions_log.csv",
         caption="📝 Submission log export",
     )
+
+
+APPROVE_WORDS = {"approved", "approve", "/approve", "/approved", "✅", "yes"}
+REJECT_WORDS = {"rejected", "reject", "/reject", "/rejected", "❌", "no"}
+
+
+def _review_word(raw: str) -> str | None:
+    """Normalise a reviewer's reply to 'approved' / 'rejected' / None.
+
+    Accepts plain words, the /approve & /reject commands (with or without
+    a @botname suffix), emojis, and trailing punctuation.
+    """
+    w = (raw or "").strip().lower()
+    if w.startswith("/"):
+        w = w.split("@", 1)[0]  # /approve@itinsightslabbot -> /approve
+    w = w.strip(".! ")
+    if w in APPROVE_WORDS:
+        return "approved"
+    if w in REJECT_WORDS:
+        return "rejected"
+    # tolerate trailing words/emojis, e.g. "approved 👍"
+    first = w.split()[0].strip(".! ") if w.split() else ""
+    if first in APPROVE_WORDS:
+        return "approved"
+    if first in REJECT_WORDS:
+        return "rejected"
+    return None
+
+
+import re
+
+# matches 'Submission:</b> #3', 'Submission: #1', 'submission #2' (HTML-aware gap)
+_SUBMISSION_REF = re.compile(r"submission\b.*?#(\d+)", re.IGNORECASE)
+
+
+async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reviewers approve/reject by replying to the submission post in the review group."""
+    cfg: Config = context.bot_data["config"]
+    msg = update.message
+    if msg is None or not msg.text:
+        return
+    if msg.reply_to_message is None:
+        if _review_word(msg.text) and msg.chat_id == cfg.review_chat_id:
+            await msg.reply_html("↩️ Reply to the submission post with that word.")
+        return
+    if msg.chat_id != cfg.review_chat_id:
+        return
+    user = update.effective_user
+    if not _is_admin(context, user.id):
+        return  # only authorized admins decide
+
+    word = _review_word(msg.text)
+    if word is None:
+        # near-miss diagnostics: helps spot why a review didn't register
+        low = msg.text.strip().lower()
+        if "approv" in low or "reject" in low:
+            logger.info("Review-like message not matched: %r", msg.text)
+        return
+
+    logger.info("Review verdict %r for a reply by admin %s", word, user.id)
+
+    replied = msg.reply_to_message
+    sub = None
+    post_msg = None
+    for cand in (replied, replied.reply_to_message):
+        if cand is None:
+            continue
+        sub = db.get_submission_by_review_message(cand.chat_id, cand.message_id)
+        if sub is None:
+            # fallback for posts created before message-linking existed:
+            # parse the submission number out of the post text/caption
+            haystack = getattr(cand, "text", None) or getattr(cand, "caption", None) or ""
+            m = _SUBMISSION_REF.search(haystack)
+            if m:
+                sub = db.get_submission(int(m.group(1)))
+        if sub is not None:
+            post_msg = cand
+            break
+    if sub is None:
+        await msg.reply_html("⚠️ That message isn't a submission post — reply to the submission instead.")
+        return
+    if sub["status"] != "pending":
+        await msg.reply_html(f"ℹ️ Submission #{sub['id']} was already <b>{esc(sub['status'])}</b>.")
+        return
+
+    approved = word == "approved"
+    db.review_submission(sub["id"], word, update.effective_user.id)
+
+    # tag the verdict on the original review post (bot's own message → editable)
+    tag = f"\n\n{'✅ APPROVED' if approved else '❌ REJECTED'} · by {esc(update.effective_user.full_name)}"
+    try:
+        if post_msg.text:
+            await context.bot.edit_message_text(
+                chat_id=post_msg.chat_id, message_id=post_msg.message_id,
+                text=post_msg.text + tag, parse_mode=ParseMode.HTML,
+            )
+        elif post_msg.caption:
+            await context.bot.edit_message_caption(
+                chat_id=post_msg.chat_id, message_id=post_msg.message_id,
+                caption=post_msg.caption + tag, parse_mode=ParseMode.HTML,
+            )
+    except Exception as exc:
+        logger.warning("Could not tag verdict on review post: %s", exc)
+
+    # notify the student
+    verdict = (
+        (f"✅ <b>Your submission was approved!</b>\n\n"
+         f"🗂 Task: #{sub['task_id']}\n"
+         f"🆔 Submission: #{sub['id']}\n"
+         f"👨‍⚖️ Reviewed by: {esc(update.effective_user.full_name)}")
+        if approved else
+        (f"❌ <b>Your submission was rejected.</b>\n\n"
+         f"🗂 Task: #{sub['task_id']}\n"
+         f"🆔 Submission: #{sub['id']}\n"
+         f"👨‍⚖️ Reviewed by: {esc(update.effective_user.full_name)}\n\n"
+         "Feel free to improve and resubmit with /submit!")
+    )
+    try:
+        await context.bot.send_message(sub["user_id"], verdict, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        logger.warning("Could not DM verdict to %s: %s", sub["user_id"], exc)
+        await msg.reply_html("⚠️ Couldn't DM the student (they may have never started the bot).")
+
+    await msg.reply_html(f"{'✅' if approved else '❌'} Submission #{sub['id']} marked "
+                         f"<b>{word}</b> — student notified.")
 
 
 def register(application: Application) -> None:
@@ -254,3 +384,13 @@ def register(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(admin_export, pattern=r"^admin:export$"), group=1)
     application.add_handler(CallbackQueryHandler(admin_export_users, pattern=r"^adm_export:users$"), group=1)
     application.add_handler(CallbackQueryHandler(admin_export_submissions, pattern=r"^adm_export:submissions$"), group=1)
+    # /approve & /reject as explicit commands (always delivered in groups,
+    # regardless of privacy mode), plus plain-word replies.
+    application.add_handler(
+        CommandHandler(["approve", "approved", "reject", "rejected"], on_review_reply),
+        group=3,
+    )
+    application.add_handler(
+        MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, on_review_reply),
+        group=3,
+    )

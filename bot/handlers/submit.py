@@ -48,7 +48,10 @@ async def submit_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """/submit or the [Submit Solution] button."""
     user_row = db.get_user(update.effective_user.id)
     if user_row is None:
-        await update.message.reply_html("✋ Please register first with /start.")
+        if update.message:
+            await update.message.reply_html("✋ Please register first with /start.")
+        elif update.callback_query:
+            await update.callback_query.answer("Please register first with /start.", show_alert=True)
         return ConversationHandler.END
     if await _deny_banned(update, user_row):
         return ConversationHandler.END
@@ -177,26 +180,34 @@ async def got_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         file_id=file_id,
     )
 
-    # ---- notify the reviewers group ----
+    # ---- notify the reviewers group (ONE post: info + solution together) ----
     handle = f"@{esc(user_row['username'])}" if user_row["username"] else esc(user_row["full_name"])
-    header = (
-        f"📥 <b>New Submission — Pending Review</b>\n\n"
+    body = (
         f"👤 <b>Student:</b> {profile_link(user_row['id'], user_row['full_name'])} · {handle}\n"
         f"🗂 <b>Task:</b> #{task['id']} — {esc(task['title'])}\n"
         f"🆔 <b>Submission:</b> #{submission_id}\n"
         f"🕐 <b>Status:</b> Pending Review"
     )
     try:
-        await context.bot.send_message(cfg.review_chat_id, header, parse_mode=ParseMode.HTML)
+        review_msg = None
         if kind == "file" and file_id:
-            await context.bot.send_document(
-                cfg.review_chat_id, file_id,
-                caption=f"📎 Attachment for submission #{submission_id}",
+            caption = f"📥 <b>New Submission — Pending Review</b>\n\n{body}\n\n📎 <b>File:</b> {esc(content or 'attachment')}"
+            review_msg = await context.bot.send_document(
+                cfg.review_chat_id, file_id, caption=caption, parse_mode=ParseMode.HTML,
             )
-        elif kind == "link" and content:
-            await context.bot.send_message(cfg.review_chat_id, f"🔗 {esc(content)}")
-        elif kind == "text" and content:
-            await context.bot.send_message(cfg.review_chat_id, f"📝 Solution:\n\n{esc(content)}")
+        else:
+            if kind == "link" and content:
+                solution = f"🔗 <b>Solution:</b> {esc(content)}"
+            else:
+                solution = f"📝 <b>Solution:</b>\n\n{esc(content)}"
+            full = f"📥 <b>New Submission — Pending Review</b>\n\n{body}\n\n{solution}"
+            review_msg = await context.bot.send_message(
+                cfg.review_chat_id, full, parse_mode=ParseMode.HTML,
+            )
+        db.set_submission_review_post(submission_id, cfg.review_chat_id, review_msg.message_id)
+        await review_msg.reply_html(
+            "💡 <i>Reply to this message with</i> <b>approved</b> <i>or</i> <b>rejected</b> <i>to review it.</i>"
+        )
     except Exception as exc:
         logger.error("Failed to notify reviewers: %s", exc)
         await msg.reply_html(
@@ -222,6 +233,17 @@ async def got_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
 
 
+async def got_unsupported_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """User sent something other than a document/text while choosing kind."""
+    chosen = context.user_data.get("sub_kind")
+    hints = {
+        "file": "⚠️ Please send your solution as a <b>document/file</b> (or /cancel).",
+        "link": "⚠️ Please send the <b>link</b> as text (or /cancel).",
+        "text": "⚠️ Please paste your solution as <b>text</b> (or /cancel).",
+    }
+    await update.message.reply_html(hints.get(chosen, "⚠️ Send a file, link or text (or /cancel)."))
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     if update.message:
@@ -238,7 +260,11 @@ def register(application: Application) -> None:
         states={
             PICK_TASK: [CallbackQueryHandler(pick_task, pattern=r"^sub_task:\d+$")],
             KIND: [CallbackQueryHandler(submission_kind, pattern=r"^sub_kind:(file|link|text)$")],
-            CONTENT: [MessageHandler(filters.Document.ALL | _TEXT_ONLY, got_content)],
+            CONTENT: [
+                MessageHandler(filters.Document.ALL | _TEXT_ONLY, got_content),
+                # anything else (photo, sticker, voice…) → gentle re-prompt
+                MessageHandler(~filters.COMMAND, got_unsupported_content),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,

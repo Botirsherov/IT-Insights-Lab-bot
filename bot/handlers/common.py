@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
+from telegram import BotCommand, BotCommandScopeChat, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
-    ApplicationHandlerStop,
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    TypeHandler,
     filters,
 )
 
@@ -31,8 +29,18 @@ HELP_TEXT = (
     "• /help — this message\n\n"
     "<b>Admins</b>\n"
     "• /newtask — create & broadcast a task\n"
-    "• /admin — open the admin panel"
+    "• /admin — open the admin panel\n\n"
+    "<b>Reviewing</b>\n"
+    "In the reviewers group, reply to a submission post with\n"
+    "<b>approved</b> or <b>rejected</b> — the student is notified automatically."
 )
+
+# Commands the bot itself implements — the unknown-command fallback must not
+# react to any of these (it runs in a later handler group for every command).
+_KNOWN_COMMANDS = {
+    "/start", "/cancel", "/tasks", "/submit", "/myprofile", "/help",
+    "/newtask", "/admin",
+}
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -55,7 +63,20 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_html("🤔 Unknown command. Try /help.")
+    """Reply only to unrecognized commands, and only in private chats."""
+    msg = update.message
+    if msg is None or not msg.text:
+        return
+    first = msg.text.split()[0]
+    if not first.startswith("/"):
+        return
+    # strip @botname suffix (e.g. /help@itinsightslabbot)
+    base = first.split("@", 1)[0].lower()
+    if base in _KNOWN_COMMANDS:
+        return  # a real handler (earlier group) owns this command
+    if update.effective_chat.type != "private":
+        return  # stay quiet in groups
+    await msg.reply_html("🤔 Unknown command. Try /help.")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,8 +102,40 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
                 pass
 
 
+USER_COMMANDS = [
+    BotCommand("start", "Register or see your profile"),
+    BotCommand("tasks", "List available tasks"),
+    BotCommand("submit", "Submit a solution"),
+    BotCommand("myprofile", "Show your profile"),
+    BotCommand("help", "Show all commands"),
+]
+
+ADMIN_COMMANDS = USER_COMMANDS + [
+    BotCommand("newtask", "Create & broadcast a task (admin)"),
+    BotCommand("admin", "Open the admin panel (admin)"),
+]
+
+
+async def setup_bot_commands(application: Application, cfg: "Config") -> None:
+    """Register the command menu so '/' and the menu button list commands.
+
+    Admins additionally get /newtask and /admin in their private-chat menu.
+    """
+    try:
+        await application.bot.set_my_commands(USER_COMMANDS)
+    except Exception as exc:
+        logger.warning("Could not set default command menu: %s", exc)
+    for admin_id in cfg.admin_ids:
+        try:
+            await application.bot.set_my_commands(
+                ADMIN_COMMANDS, scope=BotCommandScopeChat(admin_id)
+            )
+        except Exception as exc:
+            logger.warning("Could not set admin command menu for %s: %s", admin_id, exc)
+
+
 def register(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command), group=2)
     application.add_handler(CommandHandler("myprofile", my_profile), group=2)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=90)
-    application.add_handler(TypeHandler(Update, on_error), group=100, block=False)
+    application.add_error_handler(on_error)

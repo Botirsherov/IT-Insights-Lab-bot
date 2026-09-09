@@ -4,11 +4,16 @@ from __future__ import annotations
 import logging
 import sys
 
+import warnings
+
 from telegram.ext import Application, ApplicationBuilder
+from telegram.warnings import PTBUserWarning
 
 from .config import Config, load_config
 from . import db
 from .handlers import admin, common, registration, submit, tasks
+
+__version__ = "1.2.0"  # review-by-reply + single-post submissions + task attachments
 
 
 def _setup_logging(level: str) -> None:
@@ -17,6 +22,10 @@ def _setup_logging(level: str) -> None:
         level=getattr(logging, level, logging.INFO),
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # ConversationHandler's per_message=False info warning is expected for our
+    # design (mixed message+callback states); filter it from the console.
+    warnings.filterwarnings("ignore", category=PTBUserWarning,
+                            message=".*'CallbackQueryHandler' will not be tracked.*")
 
 
 def create_application(cfg: Config) -> Application:
@@ -40,10 +49,15 @@ def create_application(cfg: Config) -> Application:
 def _make_post_init(cfg: Config):
     async def post_init(app: Application) -> None:
         me = await app.bot.get_me()
-        logging.getLogger(__name__).info("Bot authorised as @%s", me.username)
+        logging.getLogger(__name__).info("Bot authorised as @%s (v%s)", me.username, __version__)
+        await common.setup_bot_commands(app, cfg)
         for admin_id in cfg.admin_ids:
             try:
-                await app.bot.send_message(admin_id, "🟢 IT Insights Lab bot is online.")
+                await app.bot.send_message(
+                    admin_id,
+                    f"🟢 IT Insights Lab bot v{__version__} is online.\n"
+                    "DM me /start here to register, or /help for all commands.",
+                )
             except Exception:
                 pass
     return post_init
@@ -59,7 +73,9 @@ def main() -> None:
     _setup_logging(cfg.log_level)
     app = create_application(cfg)
     logging.getLogger(__name__).info("Starting bot (polling)…")
-    app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
+    # drop_pending_updates=False: messages sent while the bot was offline (e.g.
+    # a /start) are processed on launch instead of being silently discarded.
+    app.run_polling(drop_pending_updates=False, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":

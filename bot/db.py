@@ -105,6 +105,20 @@ def _query_one(query: str, params: Sequence[Any] = ()) -> sqlite3.Row | None:
 # --------------------------------------------------------------------------- #
 # Lifecycle
 # --------------------------------------------------------------------------- #
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column migrations for databases created by older versions."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(submissions)")}  # r[1] = column name
+    additions = {
+        "review_chat_id": "INTEGER",
+        "review_message_id": "INTEGER",
+        "reviewed_by": "INTEGER",
+        "reviewed_at": "TEXT",
+    }
+    for name, decl in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE submissions ADD COLUMN {name} {decl}")
+
+
 def init_db(path: str | Path) -> None:
     """Create/open the database and apply the schema. Safe to call repeatedly."""
     global _db_path
@@ -114,6 +128,7 @@ def init_db(path: str | Path) -> None:
         conn = sqlite3.connect(target)
         try:
             conn.executescript(_SCHEMA)
+            _migrate(conn)
             conn.commit()
         finally:
             conn.close()
@@ -172,9 +187,19 @@ def set_user_status(user_id: int, status: str) -> bool:
 
 
 def delete_user(user_id: int) -> bool:
-    """Remove a user and their submissions entirely."""
-    cur = _execute("DELETE FROM users WHERE id = ?", (user_id,))
-    return cur.rowcount > 0
+    """Remove a user and all of their submissions (FK-safe cascade)."""
+    with _lock:
+        conn = _connect()
+        try:
+            cur = conn.execute("DELETE FROM submissions WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def count_users(status: str | None = None) -> int:
@@ -284,6 +309,22 @@ def list_submissions(task_id: int | None = None, user_id: int | None = None) -> 
     return _query_all(query, params)
 
 
+def delete_task(task_id: int) -> bool:
+    """Remove a task and its submissions (FK-safe cascade)."""
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("DELETE FROM submissions WHERE task_id = ?", (task_id,))
+            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def count_submissions_per_task() -> list[sqlite3.Row]:
     return _query_all(
         """
@@ -296,6 +337,19 @@ def count_submissions_per_task() -> list[sqlite3.Row]:
     )
 
 
+def count_submissions(user_id: int | None = None, task_id: int | None = None) -> int:
+    query = "SELECT COUNT(*) AS n FROM submissions WHERE 1 = 1"
+    params: list[Any] = []
+    if user_id is not None:
+        query += " AND user_id = ?"
+        params.append(user_id)
+    if task_id is not None:
+        query += " AND task_id = ?"
+        params.append(task_id)
+    row = _query_one(query, params)
+    return int(row["n"]) if row else 0
+
+
 def count_pending_submissions() -> int:
     row = _query_one("SELECT COUNT(*) AS n FROM submissions WHERE status = 'pending'")
     return int(row["n"]) if row else 0
@@ -305,6 +359,32 @@ def set_submission_status(submission_id: int, status: str) -> bool:
     if status not in {"pending", "approved", "rejected"}:
         raise ValueError(f"Invalid status: {status!r}")
     cur = _execute("UPDATE submissions SET status = ? WHERE id = ?", (status, submission_id))
+    return cur.rowcount > 0
+
+
+def set_submission_review_post(submission_id: int, chat_id: int, message_id: int) -> None:
+    """Remember the reviewers-group post for this submission (enables reply-based review)."""
+    _execute(
+        "UPDATE submissions SET review_chat_id = ?, review_message_id = ? WHERE id = ?",
+        (chat_id, message_id, submission_id),
+    )
+
+
+def get_submission_by_review_message(chat_id: int, message_id: int) -> sqlite3.Row | None:
+    return _query_one(
+        "SELECT * FROM submissions WHERE review_chat_id = ? AND review_message_id = ?",
+        (chat_id, message_id),
+    )
+
+
+def review_submission(submission_id: int, status: str, reviewer_id: int) -> bool:
+    """Mark a submission approved/rejected and stamp who and when."""
+    if status not in {"approved", "rejected"}:
+        raise ValueError(f"Invalid review status: {status!r}")
+    cur = _execute(
+        "UPDATE submissions SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+        (status, reviewer_id, _now(), submission_id),
+    )
     return cur.rowcount > 0
 
 

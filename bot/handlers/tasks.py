@@ -39,13 +39,22 @@ def _is_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:
 # --------------------------------------------------------------------------- #
 async def newtask_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_admin(context, update.effective_user.id):
-        await update.message.reply_html("⛔ This command is for admins only.")
+        if update.message:
+            await update.message.reply_html("⛔ This command is for admins only.")
+        elif update.callback_query:
+            await update.callback_query.answer("Admins only.", show_alert=True)
         return ConversationHandler.END
-    context.user_data.clear()
-    await update.message.reply_html(
+    prompt = (
         "📢 <b>Create a new task</b>\n\n"
         "<b>1/4 — Task title</b>\n<i>(short, e.g. “Pandas Basics — GroupBy”)</i>"
     )
+    context.user_data.clear()
+    if update.message:
+        await update.message.reply_html(prompt)
+    else:
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(prompt, parse_mode=ParseMode.HTML)
     return TITLE
 
 
@@ -173,7 +182,7 @@ async def task_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     sent = failed = 0
     for uid in user_ids:
         try:
-            await context.bot.send_message(uid, header, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            await _send_task_broadcast(context, uid, task, header, keyboard)
             sent += 1
         except Exception as exc:
             failed += 1
@@ -192,10 +201,27 @@ async def task_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # --------------------------------------------------------------------------- #
 # Student: [Get Task] viewer + /tasks list
 # --------------------------------------------------------------------------- #
+async def _send_task_broadcast(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                               task, header: str, keyboard) -> None:
+    """Send the broadcast: attachment + caption when the task has a file, else text."""
+    if task["attachment_file_id"]:
+        send = (
+            context.bot.send_photo
+            if task["attachment_kind"] == "photo"
+            else context.bot.send_document
+        )
+        await send(chat_id, task["attachment_file_id"], caption=header,
+                   parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    else:
+        await context.bot.send_message(chat_id, header, parse_mode=ParseMode.HTML,
+                                       reply_markup=keyboard)
+
+
 async def show_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    task_id = int(query.data.split(":")[1])
+    # callback data looks like "task:get:12" — the id is the LAST segment
+    task_id = int(query.data.split(":")[-1])
     task = db.get_task(task_id)
     if not task:
         await query.edit_message_text("⚠️ This task no longer exists.")
