@@ -54,6 +54,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📢 Create & Broadcast Task", callback_data="admin:newtask")],
+            [InlineKeyboardButton("🗂 Manage Tasks", callback_data="admin:tasks")],
             [InlineKeyboardButton("📊 Analytics & Stats", callback_data="admin:stats")],
             [InlineKeyboardButton("👥 User Management", callback_data="admin:users")],
             [InlineKeyboardButton("📦 Export Data", callback_data="admin:export")],
@@ -89,6 +90,37 @@ def user_detail_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
         [
             [toggle, InlineKeyboardButton("🗑 Remove", callback_data=f"adm_remove:{user_id}")],
             [InlineKeyboardButton("⬅️ Back to list", callback_data="admin:users")],
+        ]
+    )
+
+
+def tasks_admin_keyboard(task_rows: list) -> InlineKeyboardMarkup:
+    """Task list for the admin panel: one tappable row per task."""
+    rows = [
+        [InlineKeyboardButton(f"🎯 #{t['id']} — {t['title'][:36]}", callback_data=f"adm_task:{t['id']}")]
+        for t in task_rows[:15]
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Back to panel", callback_data="admin:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def task_admin_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗑 Delete task", callback_data=f"adm_taskdel:{task_id}")],
+            [InlineKeyboardButton("⬅️ Back to tasks", callback_data="admin:tasks")],
+        ]
+    )
+
+
+def task_delete_confirm_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Yes, delete", callback_data=f"adm_taskdelgo:{task_id}"),
+                InlineKeyboardButton("↩️ Cancel", callback_data=f"adm_task:{task_id}"),
+            ],
+            [InlineKeyboardButton("⬅️ Back to tasks", callback_data="admin:tasks")],
         ]
     )
 

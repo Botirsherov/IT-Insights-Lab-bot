@@ -39,7 +39,7 @@ HELP_TEXT = (
 # react to any of these (it runs in a later handler group for every command).
 _KNOWN_COMMANDS = {
     "/start", "/cancel", "/tasks", "/submit", "/myprofile", "/help",
-    "/newtask", "/admin",
+    "/newtask", "/admin", "/approve", "/approved", "/reject", "/rejected",
 }
 
 

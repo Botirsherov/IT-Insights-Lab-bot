@@ -16,7 +16,15 @@ from telegram.ext import (
 
 from .. import db
 from ..config import Config
-from ..keyboards import admin_panel_keyboard, export_keyboard, users_page_keyboard, user_detail_keyboard
+from ..keyboards import (
+    admin_panel_keyboard,
+    export_keyboard,
+    task_admin_keyboard,
+    task_delete_confirm_keyboard,
+    tasks_admin_keyboard,
+    user_detail_keyboard,
+    users_page_keyboard,
+)
 from ..utils import build_submissions_csv, build_users_csv, esc
 
 logger = logging.getLogger(__name__)
@@ -245,6 +253,92 @@ async def admin_export_submissions(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def admin_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Panel view: list all published tasks."""
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(context, query.from_user.id):
+        await _deny(update)
+        return
+    rows = db.list_tasks()
+    if rows:
+        text = f"🗂 <b>Manage Tasks</b> — {len(rows)} published\n\nTap a task for details & actions:"
+    else:
+        text = "🗂 <b>Manage Tasks</b>\n\nNo tasks yet — create one with 📢 Create & Broadcast Task or /newtask."
+    await query.edit_message_text(text, reply_markup=tasks_admin_keyboard(rows), parse_mode=ParseMode.HTML)
+
+
+async def admin_task_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Panel view: one task's details with a delete action."""
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(context, query.from_user.id):
+        await _deny(update)
+        return
+    task_id = int(query.data.split(":")[1])
+    task = db.get_task(task_id)
+    if not task:
+        await query.edit_message_text(
+            "⚠️ Task not found (it may already have been deleted).",
+            reply_markup=tasks_admin_keyboard(db.list_tasks()),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    attachment = f"\n📎 Attachment: {esc(task['attachment_kind'] or 'file')}" if task["attachment_file_id"] else ""
+    text = (
+        f"🎯 <b>Task #{task['id']}: {esc(task['title'])}</b>\n\n"
+        f"{esc(task['description'])}\n"
+        f"{attachment}\n"
+        f"⏰ Deadline: {esc(task['deadline'] or '—')}\n"
+        f"📅 Created: {esc(task['created_at'])}\n"
+        f"📝 Submissions: <b>{db.count_submissions(task_id=task_id)}</b>\n\n"
+        "⚠️ Deleting removes the task <b>and all of its submissions</b>."
+    )
+    await query.edit_message_text(text, reply_markup=task_admin_keyboard(task_id), parse_mode=ParseMode.HTML)
+
+
+async def admin_task_delete_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Confirmation step before deleting a task (destructive + irreversible)."""
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(context, query.from_user.id):
+        await _deny(update)
+        return
+    task_id = int(query.data.split(":")[1])
+    task = db.get_task(task_id)
+    if not task:
+        await query.edit_message_text(
+            "⚠️ Task not found (it may already have been deleted).",
+            reply_markup=tasks_admin_keyboard(db.list_tasks()),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    subs = db.count_submissions(task_id=task_id)
+    await query.edit_message_text(
+        f"🗑 <b>Delete Task #{task['id']}: {esc(task['title'])}?</b>\n\n"
+        f"This permanently removes the task and its <b>{subs}</b> submission(s).\n"
+        "This cannot be undone.",
+        reply_markup=task_delete_confirm_keyboard(task_id),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def admin_task_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(context, query.from_user.id):
+        await _deny(update)
+        return
+    task_id = int(query.data.split(":")[1])
+    if db.delete_task(task_id):
+        remaining = db.list_tasks()
+        text = f"🗑 Task #{task_id} deleted along with all of its submissions.\n\n🗂 Remaining tasks: {len(remaining)}"
+    else:
+        remaining = db.list_tasks()
+        text = "⚠️ Task not found (it may already have been deleted)."
+    await query.edit_message_text(text, reply_markup=tasks_admin_keyboard(remaining), parse_mode=ParseMode.HTML)
+
+
 APPROVE_WORDS = {"approved", "approve", "/approve", "/approved", "✅", "yes"}
 REJECT_WORDS = {"rejected", "reject", "/reject", "/rejected", "❌", "no"}
 
@@ -384,6 +478,10 @@ def register(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(admin_export, pattern=r"^admin:export$"), group=1)
     application.add_handler(CallbackQueryHandler(admin_export_users, pattern=r"^adm_export:users$"), group=1)
     application.add_handler(CallbackQueryHandler(admin_export_submissions, pattern=r"^adm_export:submissions$"), group=1)
+    application.add_handler(CallbackQueryHandler(admin_tasks, pattern=r"^admin:tasks$"), group=1)
+    application.add_handler(CallbackQueryHandler(admin_task_detail, pattern=r"^adm_task:\d+$"), group=1)
+    application.add_handler(CallbackQueryHandler(admin_task_delete_ask, pattern=r"^adm_taskdel:\d+$"), group=1)
+    application.add_handler(CallbackQueryHandler(admin_task_delete_confirm, pattern=r"^adm_taskdelgo:\d+$"), group=1)
     # /approve & /reject as explicit commands (always delivered in groups,
     # regardless of privacy mode), plus plain-word replies.
     application.add_handler(
