@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 NAME, CITY, OCCUPATION, OCCUPATION_OTHER, PHOTO, BIO = range(6)
 
-_TEXT_ONLY = filters.TEXT & ~filters.COMMAND
+_TEXT_ONLY = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -213,7 +213,8 @@ def register(application: Application) -> ConversationHandler:
                 # catch-all for non-photo, non-command input (keeps /cancel working:
                 # state handlers are checked before fallbacks, so commands must be
                 # excluded here or the fallback below never fires)
-                MessageHandler(~filters.PHOTO & ~filters.COMMAND, got_photo),
+                MessageHandler(~filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                               got_photo),
             ],
             BIO: [MessageHandler(_TEXT_ONLY, got_bio)],
         },

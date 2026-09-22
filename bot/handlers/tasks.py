@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 TITLE, DESCRIPTION, ATTACHMENT, DEADLINE, CONFIRM = range(5)
 
-_TEXT_ONLY = filters.TEXT & ~filters.COMMAND
+_TEXT_ONLY = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
 
 
 def _is_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> bool:

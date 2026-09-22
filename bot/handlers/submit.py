@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 PICK_TASK, KIND, CONTENT = range(3)
 
-_TEXT_ONLY = filters.TEXT & ~filters.COMMAND
+_TEXT_ONLY = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
 
 
 async def _deny_banned(update: Update, user_row) -> bool:
@@ -264,7 +264,8 @@ def register(application: Application) -> None:
             CONTENT: [
                 MessageHandler(filters.Document.ALL | _TEXT_ONLY, got_content),
                 # anything else (photo, sticker, voice…) → gentle re-prompt
-                MessageHandler(~filters.COMMAND, got_unsupported_content),
+                MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE,
+                               got_unsupported_content),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

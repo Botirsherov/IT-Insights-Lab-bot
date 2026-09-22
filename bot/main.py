@@ -13,7 +13,7 @@ from .config import Config, load_config
 from . import db
 from .handlers import admin, common, registration, submit, tasks
 
-__version__ = "1.2.0"  # review-by-reply + single-post submissions + task attachments
+__version__ = "1.3.0"  # auto-forward & bot-message guards + private-chat FSM scoping
 
 
 def _setup_logging(level: str) -> None:

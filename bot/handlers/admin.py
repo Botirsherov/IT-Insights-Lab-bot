@@ -376,6 +376,16 @@ async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Reviewers approve/reject by replying to the submission post in the review group."""
     cfg: Config = context.bot_data["config"]
     msg = update.message
+
+    # Ignore Telegram's automatic channel->group forwards (linked discussion
+    # groups mirror channel posts here) — they are duplicates of real posts.
+    if msg is not None and getattr(msg, "is_automatic_forward", False):
+        return
+    # Ignore anything sent by bots (our own replies/confirmations, other bots)
+    # so the bot never reacts to itself.
+    if msg is not None and msg.from_user is not None and msg.from_user.is_bot:
+        return
+
     if msg is None or not msg.text:
         return
     if msg.reply_to_message is None:
@@ -489,6 +499,14 @@ def register(application: Application) -> None:
         group=3,
     )
     application.add_handler(
-        MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, on_review_reply),
+        MessageHandler(
+            filters.ChatType.GROUPS
+            & filters.TEXT
+            & ~filters.COMMAND
+            & ~filters.IS_AUTOMATIC_FORWARD,  # skip channel->group mirror posts
+            # (bot-authored messages are rejected inside the handler — PTB 22.x
+            # has no filters.User(is_bot=...) equivalent)
+            on_review_reply,
+        ),
         group=3,
     )

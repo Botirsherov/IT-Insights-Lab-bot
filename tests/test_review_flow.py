@@ -154,3 +154,43 @@ def test_plain_chat_untouched(temp_db):
     asyncio.run(admin.on_review_reply(make_update(reply), make_context()))
     assert reply.replies == []
     assert db.get_submission(temp_db)["status"] == "pending"
+
+
+# --------------------------------------------------------------------------- #
+# Auto-forward & bot-authored message guards
+# --------------------------------------------------------------------------- #
+
+def _with_auto_forward(msg, flag=True):
+    msg.is_automatic_forward = flag
+    return msg
+
+
+def test_auto_forwarded_channel_post_ignored(temp_db):
+    """Linked-discussion mirrors of channel posts must never trigger reviews
+    or hints, even when they look like a perfect review reply."""
+    mirror = _with_auto_forward(FakeMessage("approved", reply_to=_linked_post(temp_db)))
+    asyncio.run(admin.on_review_reply(make_update(mirror), make_context()))
+    assert db.get_submission(temp_db)["status"] == "pending"
+    assert mirror.replies == []
+
+    # a bare auto-forward (no reply target) must not get the "reply to the
+    # submission post" hint either — the guard fires before any logic
+    bare = _with_auto_forward(FakeMessage("approved"))
+    asyncio.run(admin.on_review_reply(make_update(bare), make_context()))
+    assert bare.replies == []
+
+
+def test_bot_authored_message_ignored(temp_db):
+    """The bot must never react to messages authored by bots — including a
+    mirrored echo of its own review post that carries an admin identity."""
+    echo = FakeMessage("approved", reply_to=_linked_post(temp_db),
+                       from_id=ADMIN_ID, from_bot=True)
+    asyncio.run(admin.on_review_reply(make_update(echo), make_context()))
+    assert db.get_submission(temp_db)["status"] == "pending"
+    assert echo.replies == []
+    # and the plain-word path is guarded too (registration keeps it reachable
+    # only for the review MessageHandler, but the handler check is the backstop)
+    plain = FakeMessage("approved", reply_to=_linked_post(temp_db))
+    plain.from_user.is_bot = True
+    asyncio.run(admin.on_review_reply(make_update(plain), make_context()))
+    assert db.get_submission(temp_db)["status"] == "pending"
