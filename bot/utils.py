@@ -8,6 +8,9 @@ import logging
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+
 logger = logging.getLogger(__name__)
 
 
@@ -138,3 +141,26 @@ def build_submissions_csv(rows: Iterable[Mapping[str, Any]]) -> bytes:
 def rows_to_dicts(rows: Sequence[Any]) -> list[dict[str, Any]]:
     """Convert sqlite3.Row objects to plain dicts."""
     return [dict(r) for r in rows]
+
+
+async def safe_edit(query, text: str, reply_markup=None) -> None:
+    """Edit the message a button sits on, whether it is text or media.
+
+    Telegram forbids edit_message_text() on media posts (a photo/document with
+    a caption) and raises BadRequest("There is no text in the message to edit").
+    Strategy: edit the text; if that fails because the message is media, edit
+    the caption instead; if that also fails, send a fresh message.
+    All bot texts are HTML, so parse_mode is fixed to HTML.
+    """
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    except BadRequest:
+        try:
+            await query.edit_message_caption(
+                caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )
+        except BadRequest as exc:
+            logger.warning("safe_edit fell back to a new message: %s", exc)
+            await query.bot.send_message(
+                query.message.chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )

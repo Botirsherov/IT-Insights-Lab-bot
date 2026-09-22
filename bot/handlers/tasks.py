@@ -20,7 +20,7 @@ from telegram.ext import (
 from .. import db
 from ..config import Config
 from ..keyboards import confirm_task_keyboard, get_task_keyboard, skip_keyboard
-from ..utils import broadcast_header, esc, format_task_text, parse_deadline
+from ..utils import broadcast_header, esc, format_task_text, parse_deadline, safe_edit
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,8 @@ async def show_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     task_id = int(query.data.split(":")[-1])
     task = db.get_task(task_id)
     if not task:
-        await query.edit_message_text("⚠️ This task no longer exists.")
+        # the button may sit on a media broadcast (photo/doc + caption)
+        await safe_edit(query, "⚠️ This task no longer exists.")
         return
     text = format_task_text(task)
     if task["attachment_file_id"]:

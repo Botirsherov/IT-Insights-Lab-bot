@@ -18,7 +18,7 @@ from telegram.ext import (
 from .. import db
 from ..config import Config
 from ..keyboards import submission_kind_keyboard, task_pick_keyboard
-from ..utils import esc, profile_link
+from ..utils import esc, profile_link, safe_edit
 
 logger = logging.getLogger(__name__)
 
@@ -62,14 +62,16 @@ async def submit_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         task_id = int(query.data.split(":")[1])
         task = db.get_task(task_id)
         if not task:
-            await query.edit_message_text("⚠️ This task no longer exists.")
+            await safe_edit(query, "⚠️ This task no longer exists.")
             return ConversationHandler.END
         context.user_data["sub_task_id"] = task_id
         context.user_data["sub_task_title"] = task["title"]
-        await query.edit_message_text(
+        # The button may sit on a media broadcast (photo/doc + caption) — safe_edit
+        # handles both text and media messages.
+        await safe_edit(
+            query,
             _ask_kind_text(task_id, task["title"]),
             reply_markup=submission_kind_keyboard(),
-            parse_mode=ParseMode.HTML,
         )
         return KIND
 
@@ -106,14 +108,14 @@ async def pick_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     task_id = int(query.data.split(":")[1])
     task = db.get_task(task_id)
     if not task:
-        await query.edit_message_text("⚠️ This task no longer exists.")
+        await safe_edit(query, "⚠️ This task no longer exists.")
         return ConversationHandler.END
     context.user_data["sub_task_id"] = task_id
     context.user_data["sub_task_title"] = task["title"]
-    await query.edit_message_text(
+    await safe_edit(
+        query,
         _ask_kind_text(task_id, task["title"]),
         reply_markup=submission_kind_keyboard(),
-        parse_mode=ParseMode.HTML,
     )
     return KIND
 
@@ -128,10 +130,9 @@ async def submission_kind(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "link": "🔗 Send the <b>link</b> (GitHub, Colab, Drive…):",
         "text": "✍️ Paste your solution as <b>text</b> (up to 4000 characters):",
     }
-    await query.edit_message_text(
-        prompts.get(kind, "Send your solution:"),
-        parse_mode=ParseMode.HTML,
-    )
+    # If the previous step was edited onto media as a caption, this message is
+    # media too — safe_edit keeps the flow alive either way.
+    await safe_edit(query, prompts.get(kind, "Send your solution:"))
     return CONTENT
 
 
