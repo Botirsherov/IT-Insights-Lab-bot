@@ -38,11 +38,22 @@ def create_application(cfg: Config) -> Application:
     )
     app.bot_data["config"] = cfg
 
+    # Task 2: bring the review group up to date before anything else runs.
+    # Every submission a student delivered while the bot was down must
+    # appear in the reviewers group with no duplicate notification.
+    asyncio.get_event_loop().run_until_complete(
+        db.catch_up_pending_submissions(cfg.review_chat_id)
+    )
+
+    # Task 1: global error handler — notifies every admin and the reviewers
+    # group with the full traceback for any unhandled exception.
+    app.add_error_handler(common.on_error)
+
     registration.register(app)   # group 0 — /start conversation
     tasks.register(app)          # group 0 — /newtask conversation + task viewers
     submit.register(app)         # group 0 — /submit conversation
     admin.register(app)          # groups 1-2 — panel callbacks & command
-    common.register(app)         # groups 2, 90, 100 — help, fallback, errors
+    common.register(app)          # groups 2, 90, 100 — help, fallback, errors
     return app
 
 

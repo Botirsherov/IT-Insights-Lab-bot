@@ -7,6 +7,7 @@ event loop running handlers on one thread.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 import threading
@@ -42,14 +43,20 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE TABLE IF NOT EXISTS submissions (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL REFERENCES users(id),
-    task_id      INTEGER NOT NULL REFERENCES tasks(id),
-    kind         TEXT NOT NULL CHECK (kind IN ('file', 'link', 'text')),
-    content      TEXT,
-    file_id      TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-    submitted_at TEXT NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    task_id        INTEGER NOT NULL REFERENCES tasks(id),
+    kind           TEXT NOT NULL CHECK (kind IN ('file', 'link', 'text')),
+    content        TEXT,
+    file_id        TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    submitted_at   TEXT NOT NULL,
+    review_chat_id INTEGER,            -- reviewers group where the post lives
+    review_message_id INTEGER,         -- message id of that post
+    reviewed_by    INTEGER,            -- admin id that reviewed it
+    reviewed_at    TEXT,               -- when it was reviewed
+    review_sent_at TEXT,               -- when the offline catch-up posted it
+    review_post_id INTEGER             -- saved message id of the post (if pinned)
 );
 
 CREATE INDEX IF NOT EXISTS idx_submissions_task ON submissions(task_id);
@@ -113,6 +120,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "review_message_id": "INTEGER",
         "reviewed_by": "INTEGER",
         "reviewed_at": "TEXT",
+        "review_sent_at": "TEXT",
+        "review_post_id": "INTEGER",
     }
     for name, decl in additions.items():
         if name not in cols:
@@ -353,6 +362,87 @@ def count_submissions(user_id: int | None = None, task_id: int | None = None) ->
 def count_pending_submissions() -> int:
     row = _query_one("SELECT COUNT(*) AS n FROM submissions WHERE status = 'pending'")
     return int(row["n"]) if row else 0
+
+
+def catch_up_pending_submissions(review_chat_id: int) -> int:
+    """Bring an offline bot's review group up to date.
+
+    Sends every submission still unposted in the reviewers group to
+    REVIEW_CHAT_ID, then marks the record as 'sent' so duplicate
+    notifications are impossible.
+
+    Returns the number of submissions recovered.
+    """
+    rows = _query_all(
+        """
+        SELECT s.id, s.user_id, s.task_id, s.kind, s.content, s.file_id,
+               t.title AS task_title
+        FROM submissions s
+        JOIN tasks t ON t.id = s.task_id
+        WHERE (s.status = 'pending' OR s.review_message_id IS NULL)
+          AND s.review_sent_at IS NULL
+        ORDER BY s.submitted_at
+        """,
+    )
+    to_send = [r["id"] for r in rows]
+    sent = 0
+    for submission_id in to_send:
+        try:
+            row = get_submission(submission_id)
+            if row is None:
+                continue
+            if row["kind"] == "file" and row["file_id"]:
+                asyncio.run(_send_file_to_review(row))
+            else:
+                asyncio.run(_send_text_to_review(row))
+            sent += 1
+        except Exception:
+            logger.exception("Catch-up failed for submission #%s", submission_id)
+    if sent:
+        _mark_caught_up(sent)
+    return sent
+
+
+async def _send_text_to_review(row: sqlite3.Row) -> None:
+    student = db.get_user(row["user_id"])
+    name = student["full_name"] if student else f"User #{row['user_id']}"
+    text = (
+        "📥 Recovered submission (bot was offline)\n\n"
+        f"👤 <b>Student:</b> {esc(name)}\n"
+        f"🗂 <b>Task:</b> #{row['task_id']} {esc(row['task_title'])}\n"
+        f"📝 <b>Type:</b> {'📄 File' if row['kind'] == 'file' else '💬 Text/Link'}\n"
+        f"🆔 Submission: #{row['id']}\n"
+        f"📅 Submitted: {esc(row['submitted_at'])}\n\n"
+    )
+    if row["content"]:
+        text += f"💬 <b>Solution:</b>\n\n{code(row['content'])}\n"
+    await _review_bot.send_message(REVIEW_CHAT_ID, text, parse_mode=ParseMode.HTML)
+
+
+async def _send_file_to_review(row: sqlite3.Row) -> None:
+    student = db.get_user(row["user_id"])
+    name = student["full_name"] if student else f"User #{row['user_id']}"
+    caption = (
+        "📥 Recovered submission (bot was offline)\n\n"
+        f"👤 <b>Student:</b> {esc(name)}\n"
+        f"🗂 <b>Task:</b> #{row['task_id']} {esc(row['task_title'])}\n"
+        f"🆔 Submission: #{row['id']}\n"
+        f"📅 Submitted: {esc(row['submitted_at'])}\n\n"
+    )
+    await _review_bot.send_document(
+        REVIEW_CHAT_ID, row["file_id"], caption=caption, parse_mode=ParseMode.HTML,
+    )
+
+
+def _mark_caught_up(ids: Sequence[int]) -> None:
+    """Mark recovered submissions as sent (prevents duplicate notifications)."""
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    _execute(
+        f"UPDATE submissions SET review_sent_at = ? WHERE id IN ({placeholders})",
+        (_now(),) + tuple(ids),
+    )
 
 
 def set_submission_status(submission_id: int, status: str) -> bool:

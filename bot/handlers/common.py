@@ -7,11 +7,14 @@ from telegram import BotCommand, BotCommandScopeChat, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
+
+from telegram.error import TelegramError
 
 from .. import db
 from ..config import Config
@@ -80,9 +83,19 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global error handler: log, notify the user, alert admins on repeat failures."""
-    logger.error("Unhandled exception while processing an update", exc_info=context.error)
+    """Global error handler: log, notify the user, and alert every admin and the
+    reviewers group (including network/proxy failures like httpx.ProxyError) with
+    the full traceback so a freeze/crash is never silent."""
+    err = context.error
+    from traceback import format_exception
+
     cfg: Config | None = context.bot_data.get("config")
+    logger.error(
+        "Unhandled exception while processing an update\n%s",
+        "".join(format_exception(type(err), err, err.__traceback__)),
+    )
+
+    # Tell the user (but only if we got a message to reply to).
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_html(
@@ -90,13 +103,33 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:
             pass
+
+    # Alert every human admin of the failure, with a short one-liner.
     if cfg:
         for admin_id in cfg.admin_ids:
             try:
-                err = context.error
                 await context.bot.send_message(
                     admin_id,
-                    f"🔥 Bot error: {type(err).__name__}: {esc(str(err))[:300]}",
+                    f"🔥 IT Insights Lab bot error: {type(err).__name__}: {esc(str(err))[:300]}",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+    # If the failure looks like a network/proxy problem, the bot is probably
+    # frozen/polling is broken — DM the reviewers group as well (they run the
+    # review loop, so they get it immediately even when DMs to the admin are
+    # blocked), and also drop a copy into the review group so nothing is lost.
+    if isinstance(err, TelegramError) or "ProxyError" in type(err).__name__:
+        if cfg:
+            try:
+                await context.bot.send_message(
+                    cfg.review_chat_id,
+                    "🔥 BOT FROZEN / PROXY ERROR\n\n"
+                    f"Type: {type(err).__name__}\n"
+                    f"Message: {esc(str(err))[:400]}\n\n"
+                    "The bot has stopped handling updates. Restart it (Ctrl+C, then start again).",
+                    parse_mode=ParseMode.HTML,
                 )
             except Exception:
                 pass
