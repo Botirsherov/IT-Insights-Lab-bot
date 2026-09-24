@@ -1,11 +1,13 @@
 """Application entry point: wiring, database init, run polling."""
 from __future__ import annotations
 
+import asyncio
+import html
 import logging
 import sys
-
 import warnings
 
+from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationBuilder
 from telegram.warnings import PTBUserWarning
 
@@ -13,7 +15,7 @@ from .config import Config, load_config
 from . import db
 from .handlers import admin, common, registration, submit, tasks
 
-__version__ = "1.3.0"  # auto-forward & bot-message guards + private-chat FSM scoping
+__version__ = "1.3.1"  # bug-fixes: asyncio import, catch-up in post_init, no double error-handler
 
 
 def _setup_logging(level: str) -> None:
@@ -38,30 +40,26 @@ def create_application(cfg: Config) -> Application:
     )
     app.bot_data["config"] = cfg
 
-    # Task 2: bring the review group up to date before anything else runs.
-    # Every submission a student delivered while the bot was down must
-    # appear in the reviewers group with no duplicate notification.
-    asyncio.get_event_loop().run_until_complete(
-        db.catch_up_pending_submissions(cfg.review_chat_id)
-    )
-
-    # Task 1: global error handler — notifies every admin and the reviewers
-    # group with the full traceback for any unhandled exception.
+    # Global error handler — notifies every admin and the reviewers group
+    # with the full traceback for any unhandled exception.
     app.add_error_handler(common.on_error)
 
     registration.register(app)   # group 0 — /start conversation
     tasks.register(app)          # group 0 — /newtask conversation + task viewers
     submit.register(app)         # group 0 — /submit conversation
     admin.register(app)          # groups 1-2 — panel callbacks & command
-    common.register(app)          # groups 2, 90, 100 — help, fallback, errors
+    common.register(app)         # groups 2, 90 — help, fallback
     return app
 
 
 def _make_post_init(cfg: Config):
     async def post_init(app: Application) -> None:
         me = await app.bot.get_me()
-        logging.getLogger(__name__).info("Bot authorised as @%s (v%s)", me.username, __version__)
+        log = logging.getLogger(__name__)
+        log.info("Bot authorised as @%s (v%s)", me.username, __version__)
         await common.setup_bot_commands(app, cfg)
+
+        # Notify admins that the bot is online.
         for admin_id in cfg.admin_ids:
             try:
                 await app.bot.send_message(
@@ -71,7 +69,47 @@ def _make_post_init(cfg: Config):
                 )
             except Exception:
                 pass
+
+        # Bring the reviewers group up to date: forward any submissions
+        # that were submitted while the bot was offline (i.e. never posted).
+        pending = db.catch_up_pending_submissions()
+        if pending:
+            log.info("Catching up %d unposted submission(s)…", len(pending))
+        for row in pending:
+            try:
+                name = row["full_name"] or f"User #{row['user_id']}"
+                handle = f"@{row['username']}" if row["username"] else name
+                body = (
+                    f"📥 <b>Recovered submission (bot was offline)</b>\n\n"
+                    f"👤 <b>Student:</b> {html.escape(name)} · {html.escape(handle)}\n"
+                    f"🗂 <b>Task:</b> #{row['task_id']} — {html.escape(row['task_title'])}\n"
+                    f"🆔 <b>Submission:</b> #{row['id']}\n"
+                    f"📅 <b>Submitted:</b> {html.escape(row['submitted_at'])}\n"
+                    f"🕐 <b>Status:</b> Pending Review"
+                )
+                if row["kind"] == "file" and row["file_id"]:
+                    caption = body + f"\n\n📎 <b>File attached</b>"
+                    sent_msg = await app.bot.send_document(
+                        cfg.review_chat_id, row["file_id"],
+                        caption=caption, parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    if row["kind"] == "link" and row["content"]:
+                        solution = f"\n\n🔗 <b>Solution:</b> {html.escape(row['content'])}"
+                    elif row["content"]:
+                        solution = f"\n\n📝 <b>Solution:</b>\n\n{html.escape(row['content'])}"
+                    else:
+                        solution = ""
+                    sent_msg = await app.bot.send_message(
+                        cfg.review_chat_id, body + solution, parse_mode=ParseMode.HTML,
+                    )
+                db.mark_submission_review_sent(row["id"], cfg.review_chat_id, sent_msg.message_id)
+                log.info("Catch-up: posted submission #%s to review group", row["id"])
+            except Exception:
+                log.exception("Catch-up failed for submission #%s", row["id"])
+
     return post_init
+
 
 
 def main() -> None:

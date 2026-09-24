@@ -200,6 +200,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def not_a_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User sent something other than a photo during the PHOTO step."""
+    await update.message.reply_html(
+        "⚠️ That's not a photo. Please send an image (not as a file)."
+    )
+    return PHOTO
+
+
 def register(application: Application) -> ConversationHandler:
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -210,11 +218,11 @@ def register(application: Application) -> ConversationHandler:
             OCCUPATION_OTHER: [MessageHandler(_TEXT_ONLY, got_occupation_other)],
             PHOTO: [
                 MessageHandler(filters.PHOTO, got_photo),
-                # catch-all for non-photo, non-command input (keeps /cancel working:
-                # state handlers are checked before fallbacks, so commands must be
-                # excluded here or the fallback below never fires)
+                # catch-all for non-photo, non-command input: show a clear error
+                # instead of silently staying stuck. Commands still fall through
+                # to the fallback so /cancel works.
                 MessageHandler(~filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE,
-                               got_photo),
+                               not_a_photo),
             ],
             BIO: [MessageHandler(_TEXT_ONLY, got_bio)],
         },

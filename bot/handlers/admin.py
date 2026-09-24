@@ -1,6 +1,7 @@
 """Admin panel (/admin) — stats, user management, CSV export, task entry point."""
 from __future__ import annotations
 
+import io
 import logging
 
 from telegram import Update
@@ -232,7 +233,7 @@ async def admin_export_users(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = build_users_csv(db.iter_users_for_export())
     await context.bot.send_document(
         query.message.chat_id,
-        document=bytes(data),
+        document=io.BytesIO(data),
         filename="students_roster.csv",
         caption="👥 Student roster export",
     )
@@ -247,7 +248,7 @@ async def admin_export_submissions(update: Update, context: ContextTypes.DEFAULT
     data = build_submissions_csv(db.iter_submissions_for_export())
     await context.bot.send_document(
         query.message.chat_id,
-        document=bytes(data),
+        document=io.BytesIO(data),
         filename="submissions_log.csv",
         caption="📝 Submission log export",
     )

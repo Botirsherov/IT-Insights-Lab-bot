@@ -7,7 +7,6 @@ event loop running handlers on one thread.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import sqlite3
 import threading
@@ -364,73 +363,42 @@ def count_pending_submissions() -> int:
     return int(row["n"]) if row else 0
 
 
-def catch_up_pending_submissions(review_chat_id: int) -> int:
-    """Bring an offline bot's review group up to date.
+def catch_up_pending_submissions() -> list[sqlite3.Row]:
+    """Return all submissions that were never posted to the reviewers group.
 
-    Sends every submission still unposted in the reviewers group to
-    REVIEW_CHAT_ID, then marks the record as 'sent' so duplicate
-    notifications are impossible.
+    The caller (post_init in main.py, where the bot object is available) is
+    responsible for actually sending each row to Telegram and then calling
+    mark_submission_review_sent() for each one it successfully posts.
 
-    Returns the number of submissions recovered.
+    A submission is considered unposted when review_message_id IS NULL, meaning
+    the bot went offline before it could forward the submission to the reviewers
+    group.
     """
-    rows = _query_all(
+    return _query_all(
         """
         SELECT s.id, s.user_id, s.task_id, s.kind, s.content, s.file_id,
-               t.title AS task_title
+               s.submitted_at,
+               t.title AS task_title,
+               u.full_name, u.username
         FROM submissions s
         JOIN tasks t ON t.id = s.task_id
-        WHERE (s.status = 'pending' OR s.review_message_id IS NULL)
+        JOIN users u ON u.id = s.user_id
+        WHERE s.review_message_id IS NULL
           AND s.review_sent_at IS NULL
         ORDER BY s.submitted_at
         """,
     )
-    to_send = [r["id"] for r in rows]
-    sent = 0
-    for submission_id in to_send:
-        try:
-            row = get_submission(submission_id)
-            if row is None:
-                continue
-            if row["kind"] == "file" and row["file_id"]:
-                asyncio.run(_send_file_to_review(row))
-            else:
-                asyncio.run(_send_text_to_review(row))
-            sent += 1
-        except Exception:
-            logger.exception("Catch-up failed for submission #%s", submission_id)
-    if sent:
-        _mark_caught_up(sent)
-    return sent
 
 
-async def _send_text_to_review(row: sqlite3.Row) -> None:
-    student = db.get_user(row["user_id"])
-    name = student["full_name"] if student else f"User #{row['user_id']}"
-    text = (
-        "📥 Recovered submission (bot was offline)\n\n"
-        f"👤 <b>Student:</b> {esc(name)}\n"
-        f"🗂 <b>Task:</b> #{row['task_id']} {esc(row['task_title'])}\n"
-        f"📝 <b>Type:</b> {'📄 File' if row['kind'] == 'file' else '💬 Text/Link'}\n"
-        f"🆔 Submission: #{row['id']}\n"
-        f"📅 Submitted: {esc(row['submitted_at'])}\n\n"
-    )
-    if row["content"]:
-        text += f"💬 <b>Solution:</b>\n\n{code(row['content'])}\n"
-    await _review_bot.send_message(REVIEW_CHAT_ID, text, parse_mode=ParseMode.HTML)
-
-
-async def _send_file_to_review(row: sqlite3.Row) -> None:
-    student = db.get_user(row["user_id"])
-    name = student["full_name"] if student else f"User #{row['user_id']}"
-    caption = (
-        "📥 Recovered submission (bot was offline)\n\n"
-        f"👤 <b>Student:</b> {esc(name)}\n"
-        f"🗂 <b>Task:</b> #{row['task_id']} {esc(row['task_title'])}\n"
-        f"🆔 Submission: #{row['id']}\n"
-        f"📅 Submitted: {esc(row['submitted_at'])}\n\n"
-    )
-    await _review_bot.send_document(
-        REVIEW_CHAT_ID, row["file_id"], caption=caption, parse_mode=ParseMode.HTML,
+def mark_submission_review_sent(submission_id: int, chat_id: int, message_id: int) -> None:
+    """Record that a catch-up post was successfully sent to the reviewers group."""
+    _execute(
+        """
+        UPDATE submissions
+           SET review_chat_id = ?, review_message_id = ?, review_sent_at = ?
+         WHERE id = ?
+        """,
+        (chat_id, message_id, _now(), submission_id),
     )
 
 

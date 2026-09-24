@@ -171,4 +171,5 @@ def register(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command), group=2)
     application.add_handler(CommandHandler("myprofile", my_profile), group=2)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=90)
-    application.add_error_handler(on_error)
+    # NOTE: on_error is already registered as error handler in main.create_application().
+    # Do NOT call application.add_error_handler(on_error) here again — it would fire twice.
