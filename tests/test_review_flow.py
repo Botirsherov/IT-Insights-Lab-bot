@@ -120,12 +120,36 @@ def test_reject_variant_legacy_post(temp_db):
     assert ctx.bot.edits
 
 
-def test_non_admin_ignored(temp_db):
+def test_any_reviewer_in_group_accepted(temp_db):
     post = _linked_post(temp_db)
     reply = FakeMessage("approved", reply_to=post, from_id=42)
     asyncio.run(admin.on_review_reply(make_update(reply), make_context()))
+    assert db.get_submission(temp_db)["status"] == "approved"
+    assert db.get_submission(temp_db)["reviewed_by"] == 42
+
+
+def test_review_outside_group_ignored(temp_db):
+    post = _linked_post(temp_db)
+    reply = FakeMessage("approved", reply_to=post, chat_id=-999999, from_id=42)
+    asyncio.run(admin.on_review_reply(make_update(reply), make_context()))
     assert db.get_submission(temp_db)["status"] == "pending"
     assert reply.replies == []
+
+
+def test_izoh_comment_sent_to_student(temp_db):
+    post = _linked_post(temp_db)
+    reply = FakeMessage("rejected izoh: yaxshilab qayta ishlash kerak", reply_to=post, from_id=42)
+    ctx = make_context()
+    asyncio.run(admin.on_review_reply(make_update(reply), ctx))
+    assert db.get_submission(temp_db)["status"] == "rejected"
+    # Verify DM sent to student contains the izoh comment
+    student_dm = next(msg for chat_id, msg in ctx.bot.sent if chat_id == STUDENT_ID)
+    assert "yaxshilab qayta ishlash kerak" in student_dm
+    assert "Izoh (reviewer note)" in student_dm
+    # Verify post edit tag contains izoh
+    assert any("Izoh: yaxshilab qayta ishlash kerak" in str(edit) for edit in ctx.bot.edits)
+
+
 
 
 def test_reply_to_non_submission_post_hint(temp_db):
