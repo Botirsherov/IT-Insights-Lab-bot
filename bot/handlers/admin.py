@@ -343,28 +343,81 @@ async def admin_task_delete_confirm(update: Update, context: ContextTypes.DEFAUL
 APPROVE_WORDS = {"approved", "approve", "/approve", "/approved", "✅", "yes"}
 REJECT_WORDS = {"rejected", "reject", "/reject", "/rejected", "❌", "no"}
 
+# Triggers for the "izoh" (reviewer comment/note) section.
+# Reviewers write: "rejected izoh: yaxshilab qayta yozing"
+# or: "approved izoh: zo'r ish!"
+_IZOH_TRIGGERS = {"izoh", "note", "comment", "izoh:", "note:", "comment:"}
+
+
+def _parse_review(raw: str) -> tuple[str | None, str | None]:
+    """Parse a reviewer message into (verdict, izoh).
+
+    Returns:
+        verdict – 'approved', 'rejected', or None
+        izoh    – optional reviewer comment/note, or None
+
+    Examples:
+        'approved'                     -> ('approved', None)
+        'rejected izoh: qayta yozing'  -> ('rejected', 'qayta yozing')
+        'approved note: great work!'   -> ('approved', 'great work!')
+        'rejected\nizoh qayta yozing'  -> ('rejected', 'qayta yozing')
+    """
+    text = (raw or "").strip()
+
+    # Strip /command@botname suffix
+    if text.startswith("/"):
+        first_token = text.split()[0]
+        text = first_token.split("@", 1)[0] + text[len(first_token):]
+
+    # Split on newlines too so multi-line replies work
+    lines = text.split("\n", 1)
+    first_line = lines[0].strip().lower().strip(".! ")
+    rest = lines[1].strip() if len(lines) > 1 else ""
+
+    # Detect verdict from first word
+    parts = first_line.split(None, 1)
+    first_word = parts[0].strip(".! ") if parts else ""
+    after_verdict = parts[1] if len(parts) > 1 else ""
+
+    verdict: str | None = None
+    if first_word in APPROVE_WORDS:
+        verdict = "approved"
+    elif first_word in REJECT_WORDS:
+        verdict = "rejected"
+    else:
+        return None, None
+
+    # Extract izoh: look for trigger keywords after the verdict word
+    # e.g. "rejected izoh: yaxshilab qayta yozing"
+    izoh: str | None = None
+    combined = ((after_verdict + "\n" + rest) if rest else after_verdict).strip()
+    if combined:
+        low = combined.lower()
+        for trigger in _IZOH_TRIGGERS:
+            if low.startswith(trigger):
+                candidate = combined[len(trigger):].strip().lstrip(":").strip()
+                if candidate:
+                    izoh = candidate
+                break
+        else:
+            # No trigger keyword — treat the whole remainder as a note only
+            # if it contains meaningful text (not just emojis/punctuation)
+            candidate = combined.strip()
+            if len(candidate) > 1:  # more than a single emoji/char
+                izoh = candidate
+
+    return verdict, izoh
+
 
 def _review_word(raw: str) -> str | None:
     """Normalise a reviewer's reply to 'approved' / 'rejected' / None.
 
     Accepts plain words, the /approve & /reject commands (with or without
     a @botname suffix), emojis, and trailing punctuation.
+    Kept for backward-compatibility; prefer _parse_review() for new code.
     """
-    w = (raw or "").strip().lower()
-    if w.startswith("/"):
-        w = w.split("@", 1)[0]  # /approve@itinsightslabbot -> /approve
-    w = w.strip(".! ")
-    if w in APPROVE_WORDS:
-        return "approved"
-    if w in REJECT_WORDS:
-        return "rejected"
-    # tolerate trailing words/emojis, e.g. "approved 👍"
-    first = w.split()[0].strip(".! ") if w.split() else ""
-    if first in APPROVE_WORDS:
-        return "approved"
-    if first in REJECT_WORDS:
-        return "rejected"
-    return None
+    verdict, _ = _parse_review(raw)
+    return verdict
 
 
 import re
@@ -374,7 +427,14 @@ _SUBMISSION_REF = re.compile(r"submission\b.*?#(\d+)", re.IGNORECASE)
 
 
 async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reviewers approve/reject by replying to the submission post in the review group."""
+    """Anyone in the reviewers group can approve/reject by replying to a submission post.
+
+    Usage:
+        approved                         – approve the submission
+        rejected                         – reject without a note
+        rejected izoh: yaxshilab qayta   – reject + send a note to the student
+        approved note: zo'r ish!         – approve + send a note to the student
+    """
     cfg: Config = context.bot_data["config"]
     msg = update.message
 
@@ -389,17 +449,24 @@ async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if msg is None or not msg.text:
         return
-    if msg.reply_to_message is None:
-        if _review_word(msg.text) and msg.chat_id == cfg.review_chat_id:
-            await msg.reply_html("↩️ Reply to the submission post with that word.")
-        return
+
+    # Only process messages from the reviewers group
     if msg.chat_id != cfg.review_chat_id:
         return
-    user = update.effective_user
-    if not _is_admin(context, user.id):
-        return  # only authorized admins decide
 
-    word = _review_word(msg.text)
+    user = update.effective_user
+
+    # Hint when someone types a review word without replying to a submission
+    if msg.reply_to_message is None:
+        if _review_word(msg.text):
+            await msg.reply_html(
+                "↩️ Reply to the submission post with "
+                "<b>approved</b> or <b>rejected</b>.\n"
+                "You can also add a note: <code>rejected izoh: yaxshilab qayta yozing</code>"
+            )
+        return
+
+    word, izoh = _parse_review(msg.text)
     if word is None:
         # near-miss diagnostics: helps spot why a review didn't register
         low = msg.text.strip().lower()
@@ -407,7 +474,10 @@ async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.info("Review-like message not matched: %r", msg.text)
         return
 
-    logger.info("Review verdict %r for a reply by admin %s", word, user.id)
+    logger.info(
+        "Review verdict %r (izoh=%r) by user %s (%s)",
+        word, izoh, user.id, user.full_name,
+    )
 
     replied = msg.reply_to_message
     sub = None
@@ -434,10 +504,14 @@ async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     approved = word == "approved"
-    db.review_submission(sub["id"], word, update.effective_user.id)
+    db.review_submission(sub["id"], word, user.id)
 
-    # tag the verdict on the original review post (bot's own message → editable)
-    tag = f"\n\n{'✅ APPROVED' if approved else '❌ REJECTED'} · by {esc(update.effective_user.full_name)}"
+    # Tag the verdict on the original review post (bot's own message → editable)
+    tag = (
+        f"\n\n{'✅ APPROVED' if approved else '❌ REJECTED'} · by {esc(user.full_name)}"
+    )
+    if izoh:
+        tag += f"\n💬 Izoh: {esc(izoh)}"
     try:
         if post_msg.text:
             await context.bot.edit_message_text(
@@ -452,27 +526,36 @@ async def on_review_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.warning("Could not tag verdict on review post: %s", exc)
 
-    # notify the student
-    verdict = (
-        (f"✅ <b>Your submission was approved!</b>\n\n"
-         f"🗂 Task: #{sub['task_id']}\n"
-         f"🆔 Submission: #{sub['id']}\n"
-         f"👨‍⚖️ Reviewed by: {esc(update.effective_user.full_name)}")
-        if approved else
-        (f"❌ <b>Your submission was rejected.</b>\n\n"
-         f"🗂 Task: #{sub['task_id']}\n"
-         f"🆔 Submission: #{sub['id']}\n"
-         f"👨‍⚖️ Reviewed by: {esc(update.effective_user.full_name)}\n\n"
-         "Feel free to improve and resubmit with /submit!")
-    )
+    # Build the student notification
+    izoh_block = f"\n\n💬 <b>Izoh (reviewer note):</b>\n{esc(izoh)}" if izoh else ""
+    if approved:
+        verdict_text = (
+            f"✅ <b>Your submission was approved!</b>\n\n"
+            f"🗂 Task: #{sub['task_id']}\n"
+            f"🆔 Submission: #{sub['id']}\n"
+            f"👨‍⚖️ Reviewed by: {esc(user.full_name)}"
+            f"{izoh_block}"
+        )
+    else:
+        verdict_text = (
+            f"❌ <b>Your submission was rejected.</b>\n\n"
+            f"🗂 Task: #{sub['task_id']}\n"
+            f"🆔 Submission: #{sub['id']}\n"
+            f"👨‍⚖️ Reviewed by: {esc(user.full_name)}"
+            f"{izoh_block}\n\n"
+            "Feel free to improve and resubmit with /submit!"
+        )
     try:
-        await context.bot.send_message(sub["user_id"], verdict, parse_mode=ParseMode.HTML)
+        await context.bot.send_message(sub["user_id"], verdict_text, parse_mode=ParseMode.HTML)
     except Exception as exc:
         logger.warning("Could not DM verdict to %s: %s", sub["user_id"], exc)
         await msg.reply_html("⚠️ Couldn't DM the student (they may have never started the bot).")
 
-    await msg.reply_html(f"{'✅' if approved else '❌'} Submission #{sub['id']} marked "
-                         f"<b>{word}</b> — student notified.")
+    izoh_confirm = f" · 💬 izoh yuborildi" if izoh else ""
+    await msg.reply_html(
+        f"{'✅' if approved else '❌'} Submission #{sub['id']} marked "
+        f"<b>{word}</b> — student notified{izoh_confirm}."
+    )
 
 
 def register(application: Application) -> None:

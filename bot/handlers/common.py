@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from telegram.error import TelegramError
+
 
 from .. import db
 from ..config import Config
@@ -31,11 +31,15 @@ HELP_TEXT = (
     "• /myprofile — show your profile\n"
     "• /help — this message\n\n"
     "<b>Admins</b>\n"
-    "• /newtask — create & broadcast a task\n"
+    "• /newtask — create &amp; broadcast a task\n"
     "• /admin — open the admin panel\n\n"
-    "<b>Reviewing</b>\n"
-    "In the reviewers group, reply to a submission post with\n"
-    "<b>approved</b> or <b>rejected</b> — the student is notified automatically."
+    "<b>Reviewing (in the reviewers group)</b>\n"
+    "Reply to a submission post with:\n"
+    "• <b>approved</b> — approve the submission\n"
+    "• <b>rejected</b> — reject the submission\n"
+    "• <code>rejected izoh: yaxshilab qayta yozing</code> — reject with a note\n"
+    "• <code>approved izoh: zo'r ish!</code> — approve with a note\n"
+    "The student is notified automatically."
 )
 
 # Commands the bot itself implements — the unknown-command fallback must not
@@ -105,30 +109,13 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
     # Alert every human admin of the failure, with a short one-liner.
+    # Error reports are sent only to admin DMs — never to the reviewers group.
     if cfg:
         for admin_id in cfg.admin_ids:
             try:
                 await context.bot.send_message(
                     admin_id,
                     f"🔥 IT Insights Lab bot error: {type(err).__name__}: {esc(str(err))[:300]}",
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception:
-                pass
-
-    # If the failure looks like a network/proxy problem, the bot is probably
-    # frozen/polling is broken — DM the reviewers group as well (they run the
-    # review loop, so they get it immediately even when DMs to the admin are
-    # blocked), and also drop a copy into the review group so nothing is lost.
-    if isinstance(err, TelegramError) or "ProxyError" in type(err).__name__:
-        if cfg:
-            try:
-                await context.bot.send_message(
-                    cfg.review_chat_id,
-                    "🔥 BOT FROZEN / PROXY ERROR\n\n"
-                    f"Type: {type(err).__name__}\n"
-                    f"Message: {esc(str(err))[:400]}\n\n"
-                    "The bot has stopped handling updates. Restart it (Ctrl+C, then start again).",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
