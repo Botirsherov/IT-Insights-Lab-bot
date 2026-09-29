@@ -8,7 +8,9 @@ import sys
 import warnings
 
 from telegram.constants import ParseMode
+from telegram.error import NetworkError
 from telegram.ext import Application, ApplicationBuilder
+from telegram.request import HTTPXRequest
 from telegram.warnings import PTBUserWarning
 
 from .config import Config, load_config
@@ -32,9 +34,26 @@ def _setup_logging(level: str) -> None:
 
 def create_application(cfg: Config) -> Application:
     db.init_db(cfg.database_path)
+
+    # Configure robust HTTP request timeouts to gracefully handle proxy 503s & network drops
+    request = HTTPXRequest(
+        connect_timeout=15.0,
+        read_timeout=20.0,
+        write_timeout=20.0,
+        pool_timeout=20.0,
+    )
+    get_updates_request = HTTPXRequest(
+        connect_timeout=15.0,
+        read_timeout=30.0,
+        write_timeout=20.0,
+        pool_timeout=20.0,
+    )
+
     app = (
         ApplicationBuilder()
         .token(cfg.bot_token)
+        .request(request)
+        .get_updates_request(get_updates_request)
         .post_init(_make_post_init(cfg))
         .build()
     )
@@ -120,11 +139,27 @@ def main() -> None:
         sys.exit(1)
 
     _setup_logging(cfg.log_level)
+    log = logging.getLogger(__name__)
     app = create_application(cfg)
-    logging.getLogger(__name__).info("Starting bot (polling)…")
-    # drop_pending_updates=False: messages sent while the bot was offline (e.g.
-    # a /start) are processed on launch instead of being silently discarded.
-    app.run_polling(drop_pending_updates=False, allowed_updates=["message", "callback_query"])
+    log.info("Starting bot (polling)…")
+
+    # Resilience loop: automatically recover from temporary proxy/network 503 drops
+    while True:
+        try:
+            app.run_polling(
+                drop_pending_updates=False,
+                allowed_updates=["message", "callback_query"],
+                bootstrap_retries=-1,
+            )
+            break  # Exit cleanly if stopped intentionally (SIGINT / Ctrl+C)
+        except (NetworkError, Exception) as exc:
+            log.error(
+                "Polling connection lost (%s: %s). Re-establishing connection in 5s...",
+                type(exc).__name__,
+                exc,
+            )
+            import time
+            time.sleep(5)
 
 
 if __name__ == "__main__":

@@ -87,11 +87,15 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global error handler: log, notify the user, and alert every admin and the
-    reviewers group (including network/proxy failures like httpx.ProxyError) with
-    the full traceback so a freeze/crash is never silent."""
+    """Global error handler: log, notify the user, and alert every admin
+    with the full traceback so a freeze/crash is never silent."""
     err = context.error
+    from telegram.error import NetworkError
     from traceback import format_exception
+
+    if isinstance(err, NetworkError):
+        logger.warning("Network/Proxy error encountered (%s): %s", type(err).__name__, err)
+        return
 
     cfg: Config | None = context.bot_data.get("config")
     logger.error(
