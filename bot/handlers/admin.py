@@ -159,9 +159,11 @@ async def admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not user:
         await query.edit_message_text("⚠️ User not found.")
         return
+    org = user["organization"] if "organization" in user.keys() else "Yuqori Chirchiq TIM"
     text = (
         f"👤 <b>{esc(user['full_name'])}</b> · @{esc(user['username'] or 'no handle')}\n"
         f"🆔 <code>{user['id']}</code>\n"
+        f"🏫 Organisation: <b>{esc(org)}</b>\n"
         f"🏙 {esc(user['city'])} · 💼 {esc(user['occupation'])}\n"
         f"📅 Registered: {esc(user['registered_at'])}\n"
         f"🚦 Status: <b>{esc(user['status'])}</b>\n\n"

@@ -76,6 +76,13 @@ def _make_post_init(cfg: Config):
         me = await app.bot.get_me()
         log = logging.getLogger(__name__)
         log.info("Bot authorised as @%s (v%s)", me.username, __version__)
+
+        db.init_group_chats({
+            "yuqori_chirchiq": {"chat_id": cfg.group_chat_id, "invite_link": cfg.invite_link},
+            "aut_cohort": {"chat_id": cfg.aut_group_chat_id, "invite_link": cfg.aut_invite_link},
+            "review": {"chat_id": cfg.review_chat_id, "invite_link": ""},
+        })
+
         await common.setup_bot_commands(app, cfg)
 
         # Notify admins that the bot is online.

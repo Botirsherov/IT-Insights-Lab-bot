@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -17,14 +19,60 @@ from telegram.ext import (
 
 from .. import db
 from ..config import Config
-from ..keyboards import occupation_keyboard
+from ..keyboards import channel_sub_keyboard, occupation_keyboard, organization_keyboard
 from ..utils import build_intro_card, esc, welcome_text
 
 logger = logging.getLogger(__name__)
 
-NAME, CITY, OCCUPATION, OCCUPATION_OTHER, PHOTO, BIO = range(6)
+CHANNEL_SUB, ORGANIZATION, NAME, CITY, OCCUPATION, OCCUPATION_OTHER, PHOTO, BIO = range(8)
 
 _TEXT_ONLY = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
+
+
+async def check_channel_subscription(bot, channel: str, user_id: int) -> bool:
+    """Check whether a user is subscribed to the mandatory channel."""
+    if not channel:
+        return True
+    ch = channel if channel.startswith("@") else f"@{channel}"
+    try:
+        member = await bot.get_chat_member(chat_id=ch, user_id=user_id)
+        return member.status in ("creator", "administrator", "member", "restricted")
+    except Exception as exc:
+        logger.warning("Could not verify chat member for %s in %s: %s", user_id, ch, exc)
+        return False
+
+
+async def safe_send_photo_with_migration(
+    bot,
+    chat_id: int,
+    photo: str,
+    caption: str,
+    parse_mode: str = ParseMode.HTML,
+    org_name: str | None = None,
+):
+    """Send photo to group, automatically handling supergroup migration error."""
+    try:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+    except BadRequest as exc:
+        msg = str(exc)
+        if "Group migrated to supergroup" in msg or "migrate_to_chat_id" in msg:
+            match = re.search(r"New id:\s*(-?\d+)", msg)
+            if match:
+                new_chat_id = int(match.group(1))
+                logger.info("Migrating group chat ID from %s to %s for org %s", chat_id, new_chat_id, org_name)
+                db.update_group_chat_id_by_old(chat_id, new_chat_id)
+                return await bot.send_photo(
+                    chat_id=new_chat_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                )
+        raise
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -44,7 +92,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 "⛔ You are banned from this cohort. Contact an admin if you believe this is a mistake."
             )
             return ConversationHandler.END
-        link_line = f"\n🔗 Group: {cfg.invite_link}" if cfg.invite_link else ""
+        org = existing["organization"] if "organization" in existing.keys() else "Yuqori Chirchiq TIM"
+        _, invite_link = db.get_org_group_info(cfg, org)
+        link_line = f"\n🔗 Group: {invite_link}" if invite_link else ""
         await update.message.reply_html(
             f"👋 Welcome back, <b>{esc(existing['full_name'])}</b>! You are already registered.{link_line}\n\n"
             "📌 <b>Commands:</b>\n"
@@ -56,11 +106,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     context.user_data.clear()
+
+    # Step 0: Check mandatory channel subscription first
+    is_subbed = await check_channel_subscription(context.bot, cfg.mandatory_channel, u.id)
+    if not is_subbed:
+        await update.message.reply_html(
+            "📢 <b>Mandatory Channel Subscription</b>\n\n"
+            f"To register and use the IT Insights Lab bot, you must first join our channel: <b>{esc(cfg.mandatory_channel)}</b>.\n\n"
+            "After joining, tap the button below to verify.",
+            reply_markup=channel_sub_keyboard(cfg.mandatory_channel),
+        )
+        return CHANNEL_SUB
+
     await update.message.reply_html(
         "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
-        "I'll register you for the data analytics cohort in a few quick steps.\n\n"
-        "<b>Step 1/5 — What is your full name?</b>\n"
-        "<i>(send it as a text message)</i>"
+        "I'll register you for your cohort in a few quick steps.\n\n"
+        "<b>Step 1/6 — Which organisation are you from?</b>",
+        reply_markup=organization_keyboard(),
+    )
+    return ORGANIZATION
+
+
+async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    u = update.effective_user
+    cfg: Config = context.bot_data["config"]
+    is_subbed = await check_channel_subscription(context.bot, cfg.mandatory_channel, u.id)
+    if not is_subbed:
+        await query.answer("⚠️ You haven't joined the channel yet! Please join first.", show_alert=True)
+        return CHANNEL_SUB
+
+    await query.edit_message_text(
+        "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
+        "I'll register you for your cohort in a few quick steps.\n\n"
+        "<b>Step 1/6 — Which organisation are you from?</b>",
+        reply_markup=organization_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    return ORGANIZATION
+
+
+async def got_organization(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    choice = query.data.split(":", 1)[1]
+    context.user_data["reg_organization"] = choice
+    await query.edit_message_text(
+        f"✅ Organisation: <b>{esc(choice)}</b>\n\n"
+        "<b>Step 2/6 — What is your full name?</b>\n"
+        "<i>(send it as a text message)</i>",
+        parse_mode=ParseMode.HTML,
     )
     return NAME
 
@@ -73,7 +169,7 @@ async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["reg_full_name"] = text
     await update.message.reply_html(
         f"Nice to meet you, <b>{esc(text)}</b>!\n\n"
-        "<b>Step 2/5 — Which city are you joining from?</b>"
+        "<b>Step 3/6 — Which city are you joining from?</b>"
     )
     return CITY
 
@@ -85,7 +181,7 @@ async def got_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return CITY
     context.user_data["reg_city"] = text
     await update.message.reply_html(
-        "Great!\n\n<b>Step 3/5 — What best describes you?</b>",
+        "Great!\n\n<b>Step 4/6 — What best describes you?</b>",
         reply_markup=occupation_keyboard(),
     )
     return OCCUPATION
@@ -101,7 +197,7 @@ async def got_occupation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data["reg_occupation"] = choice
     await query.edit_message_text(
         f"✅ Occupation: <b>{esc(choice)}</b>\n\n"
-        "<b>Step 4/5 — Send a profile photo.</b>\n"
+        "<b>Step 5/6 — Send a profile photo.</b>\n"
         "<i>(a clear photo of you — it will be used on your intro card in the cohort group)</i>",
         parse_mode=ParseMode.HTML,
     )
@@ -115,7 +211,7 @@ async def got_occupation_other(update: Update, context: ContextTypes.DEFAULT_TYP
         return OCCUPATION_OTHER
     context.user_data["reg_occupation"] = text
     await update.message.reply_html(
-        "✅ Got it!\n\n<b>Step 4/5 — Send a profile photo.</b>\n"
+        "✅ Got it!\n\n<b>Step 5/6 — Send a profile photo.</b>\n"
         "<i>(it will be used on your intro card in the cohort group)</i>"
     )
     return PHOTO
@@ -129,7 +225,7 @@ async def got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["reg_photo_file_id"] = photo[-1].file_id  # highest resolution
     await update.message.reply_html(
         "📸 Photo received!\n\n"
-        "<b>Step 5/5 — Write a short bio / introduction.</b>\n"
+        "<b>Step 6/6 — Write a short bio / introduction.</b>\n"
         "<i>(2–4 sentences: who you are, your background, and what you hope to learn)</i>"
     )
     return BIO
@@ -146,12 +242,14 @@ async def got_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     cfg: Config = context.bot_data["config"]
     u = update.effective_user
+    org = context.user_data.get("reg_organization", "Yuqori Chirchiq TIM")
     profile = {
         "full_name": context.user_data["reg_full_name"],
         "username": u.username,
         "city": context.user_data["reg_city"],
         "occupation": context.user_data["reg_occupation"],
         "bio": text,
+        "organization": org,
     }
     db.register_user(
         user_id=u.id,
@@ -161,15 +259,21 @@ async def got_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         occupation=profile["occupation"],
         photo_file_id=context.user_data["reg_photo_file_id"],
         bio=profile["bio"],
+        organization=org,
     )
+
+    # Fetch group details for the user's organization
+    target_chat_id, invite_link = db.get_org_group_info(cfg, org)
 
     # ---- introduction card to the cohort group ----
     try:
-        await context.bot.send_photo(
-            chat_id=cfg.group_chat_id,
+        await safe_send_photo_with_migration(
+            bot=context.bot,
+            chat_id=target_chat_id,
             photo=context.user_data["reg_photo_file_id"],
             caption=build_intro_card(profile),
             parse_mode=ParseMode.HTML,
+            org_name=org,
         )
     except Exception as exc:
         logger.error("Failed to send intro card to group: %s", exc)
@@ -184,7 +288,7 @@ async def got_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             except Exception:
                 pass
 
-    await update.message.reply_html(welcome_text(profile, cfg.invite_link))
+    await update.message.reply_html(welcome_text(profile, invite_link))
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -212,17 +316,15 @@ def register(application: Application) -> ConversationHandler:
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            CHANNEL_SUB: [CallbackQueryHandler(check_sub_callback, pattern=r"^check_channel_sub$")],
+            ORGANIZATION: [CallbackQueryHandler(got_organization, pattern=r"^reg_org:")],
             NAME: [MessageHandler(_TEXT_ONLY, got_name)],
             CITY: [MessageHandler(_TEXT_ONLY, got_city)],
             OCCUPATION: [CallbackQueryHandler(got_occupation, pattern=r"^reg_occ:")],
             OCCUPATION_OTHER: [MessageHandler(_TEXT_ONLY, got_occupation_other)],
             PHOTO: [
                 MessageHandler(filters.PHOTO, got_photo),
-                # catch-all for non-photo, non-command input: show a clear error
-                # instead of silently staying stuck. Commands still fall through
-                # to the fallback so /cancel works.
-                MessageHandler(~filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE,
-                               not_a_photo),
+                MessageHandler(~filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE, not_a_photo),
             ],
             BIO: [MessageHandler(_TEXT_ONLY, got_bio)],
         },

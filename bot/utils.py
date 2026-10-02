@@ -57,11 +57,13 @@ def broadcast_header(task: Mapping[str, Any]) -> str:
 
 def build_intro_card(user: Mapping[str, Any]) -> str:
     """Introduction card text posted to the cohort group after registration."""
-    username = user["username"]
+    username = user.get("username")
     handle = f" · @{esc(username)}" if username else ""
+    org = user.get("organization") or "Yuqori Chirchiq TIM"
     return (
         "🎉 <b>New member joined IT Insights Lab!</b>\n\n"
         f"👤 <b>{esc(user['full_name'])}</b>{handle}\n"
+        f"🏫 Organisation: <b>{esc(org)}</b>\n"
         f"🏙 City: {esc(user['city'])}\n"
         f"💼 Occupation: {esc(user['occupation'])}\n\n"
         f"📝 {esc(user['bio'])}"
@@ -71,11 +73,13 @@ def build_intro_card(user: Mapping[str, Any]) -> str:
 def welcome_text(user: Mapping[str, Any], invite_link: str) -> str:
     """Private welcome message with the group invite link."""
     link_line = f"👉 {invite_link}" if invite_link else "(ask an admin for the invite link)"
+    org = user.get("organization") or "Yuqori Chirchiq TIM"
     return (
         "✅ <b>Registration complete — welcome aboard!</b>\n\n"
         f"👤 {esc(user['full_name'])}\n"
+        f"🏫 Organisation: <b>{esc(org)}</b>\n"
         f"🏙 {esc(user['city'])} · 💼 {esc(user['occupation'])}\n\n"
-        f"🔗 <b>Join the cohort group:</b>\n{link_line}\n\n"
+        f"🔗 <b>Join your cohort group:</b>\n{link_line}\n\n"
         "📌 <b>Commands:</b>\n"
         "• /tasks — list available tasks\n"
         "• /submit — submit a solution\n"
@@ -106,16 +110,17 @@ def parse_deadline(raw: str) -> str | None:
 def build_users_csv(rows: Iterable[Mapping[str, Any]]) -> bytes:
     """Student roster CSV as bytes (for sending as a document)."""
     headers = [
-        "user_id", "username", "full_name", "city", "occupation",
+        "user_id", "username", "full_name", "city", "occupation", "organization",
         "status", "registered_at", "banned_at",
     ]
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(headers)
     for r in rows:
+        org = r["organization"] if "organization" in r.keys() else "Yuqori Chirchiq TIM"
         writer.writerow([
             r["id"], r["username"] or "", r["full_name"], r["city"], r["occupation"],
-            r["status"], r["registered_at"], r["banned_at"] or "",
+            org, r["status"], r["registered_at"], r["banned_at"] or "",
         ])
     return buf.getvalue().encode("utf-8-sig")
 

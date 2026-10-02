@@ -37,6 +37,9 @@ class FakeBot:
     async def get_me(self):
         return types.SimpleNamespace(username=self.username)
 
+    async def get_chat_member(self, chat_id, user_id):
+        return types.SimpleNamespace(status="member")
+
 
 def make_config() -> Config:
     return Config(
@@ -67,24 +70,29 @@ def temp_db(tmp_path):
     db._db_path = None
 
 
-def test_start_prompts_for_name(temp_db):
+def test_start_prompts_for_organization(temp_db):
     assert db.get_user(555) is None
     upd = msg_update("/start")
     state = asyncio.run(registration.start(upd, make_context()))
-    assert state == registration.NAME
+    assert state == registration.ORGANIZATION
     text = upd.message.replies[0][0]
-    assert "Step 1/5" in text and "full name" in text
+    assert "Step 1/6" in text and "organisation" in text
 
 
 def test_full_registration_flow_saves_user(temp_db):
     ctx = make_context()
     asyncio.run(registration.start(msg_update("/start"), ctx))
 
-    assert asyncio.run(registration.got_name(msg_update("Ada Lovelace"), ctx)) == registration.CITY
-    assert asyncio.run(registration.got_city(msg_update("London"), ctx)) == registration.OCCUPATION
-
     async def _noop(*a, **k):
         pass
+
+    org_upd = types.SimpleNamespace(
+        callback_query=types.SimpleNamespace(data="reg_org:AUT Cohort", answer=_noop, edit_message_text=_noop),
+        effective_user=FakeUser(), effective_chat=FakeChat(),
+    )
+    assert asyncio.run(registration.got_organization(org_upd, ctx)) == registration.NAME
+    assert asyncio.run(registration.got_name(msg_update("Ada Lovelace"), ctx)) == registration.CITY
+    assert asyncio.run(registration.got_city(msg_update("London"), ctx)) == registration.OCCUPATION
 
     occ_upd = types.SimpleNamespace(
         callback_query=types.SimpleNamespace(data="reg_occ:Student", answer=_noop, edit_message_text=_noop),
@@ -107,6 +115,7 @@ def test_full_registration_flow_saves_user(temp_db):
     assert row is not None
     assert row["full_name"] == "Ada Lovelace"
     assert row["city"] == "London"
+    assert row["organization"] == "AUT Cohort"
 
 
 def test_unknown_command_ignores_known_commands(temp_db):

@@ -59,14 +59,25 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if user is None:
         await update.message.reply_html("✋ You're not registered yet — send /start first.")
         return
+    org = user["organization"] if "organization" in user.keys() else "Yuqori Chirchiq TIM"
     text = (
         f"👤 <b>{esc(user['full_name'])}</b> · @{esc(user['username'] or 'no handle')}\n"
+        f"🏫 Organisation: <b>{esc(org)}</b>\n"
         f"🏙 {esc(user['city'])} · 💼 {esc(user['occupation'])}\n"
         f"🚦 Status: <b>{esc(user['status'])}</b>\n"
         f"📅 Registered: {esc(user['registered_at'])}\n\n"
         f"📝 {esc(user['bio'])}"
     )
     await update.message.reply_html(text)
+
+
+async def handle_group_migration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.migrate_to_chat_id:
+        return
+    old_id = update.effective_chat.id
+    new_id = update.message.migrate_to_chat_id
+    logger.info("Group migration detected: old_id=%s -> new_id=%s", old_id, new_id)
+    db.update_group_chat_id_by_old(old_id, new_id)
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -161,6 +172,7 @@ async def setup_bot_commands(application: Application, cfg: "Config") -> None:
 def register(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command), group=2)
     application.add_handler(CommandHandler("myprofile", my_profile), group=2)
+    application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE_TO_CHAT_ID, handle_group_migration), group=0)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=90)
     # NOTE: on_error is already registered as error handler in main.create_application().
     # Do NOT call application.add_error_handler(on_error) here again — it would fire twice.

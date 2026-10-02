@@ -3,7 +3,27 @@ from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+ORGANIZATION_PRESETS = ["Yuqori Chirchiq TIM", "AUT Cohort"]
 OCCUPATION_PRESETS = ["Student", "Working Professional", "Data Analyst"]
+
+
+def organization_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("🏢 Yuqori Chirchiq TIM", callback_data="reg_org:Yuqori Chirchiq TIM")],
+        [InlineKeyboardButton("🏛 AUT Cohort", callback_data="reg_org:AUT Cohort")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def channel_sub_keyboard(channel_username: str) -> InlineKeyboardMarkup:
+    clean_username = channel_username.lstrip("@")
+    url = f"https://t.me/{clean_username}"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"📢 Join {channel_username}", url=url)],
+            [InlineKeyboardButton("✅ I have joined", callback_data="check_channel_sub")],
+        ]
+    )
 
 
 def occupation_keyboard() -> InlineKeyboardMarkup:

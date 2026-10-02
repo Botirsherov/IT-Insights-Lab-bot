@@ -25,9 +25,16 @@ CREATE TABLE IF NOT EXISTS users (
     occupation     TEXT NOT NULL,
     photo_file_id  TEXT NOT NULL,
     bio            TEXT NOT NULL,
+    organization   TEXT NOT NULL DEFAULT 'Yuqori Chirchiq TIM',
     status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'banned')),
     registered_at  TEXT NOT NULL,
     banned_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS group_chats (
+    org_key     TEXT PRIMARY KEY,
+    chat_id     INTEGER NOT NULL,
+    invite_link TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -126,6 +133,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(f"ALTER TABLE submissions ADD COLUMN {name} {decl}")
 
+    user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+    if "organization" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN organization TEXT NOT NULL DEFAULT 'Yuqori Chirchiq TIM'")
+
 
 def init_db(path: str | Path) -> None:
     """Create/open the database and apply the schema. Safe to call repeatedly."""
@@ -145,8 +156,45 @@ def init_db(path: str | Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Users
+# Users & Groups
 # --------------------------------------------------------------------------- #
+def init_group_chats(default_chats: dict[str, dict[str, Any]]) -> None:
+    """Ensure default group chat IDs and invite links exist in DB."""
+    for key, data in default_chats.items():
+        _execute(
+            """
+            INSERT INTO group_chats (org_key, chat_id, invite_link)
+            VALUES (?, ?, ?)
+            ON CONFLICT(org_key) DO NOTHING
+            """,
+            (key, data["chat_id"], data.get("invite_link", "")),
+        )
+
+
+def get_group_chat_info(key: str, default_chat_id: int, default_invite_link: str = "") -> tuple[int, str]:
+    row = _query_one("SELECT chat_id, invite_link FROM group_chats WHERE org_key = ?", (key,))
+    if row:
+        link = row["invite_link"] if row["invite_link"] else default_invite_link
+        return int(row["chat_id"]), link
+    return default_chat_id, default_invite_link
+
+
+def update_group_chat_id(key: str, new_chat_id: int) -> None:
+    _execute("UPDATE group_chats SET chat_id = ? WHERE org_key = ?", (new_chat_id, key))
+
+
+def update_group_chat_id_by_old(old_chat_id: int, new_chat_id: int) -> bool:
+    cur = _execute("UPDATE group_chats SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+    return cur.rowcount > 0
+
+
+def get_org_group_info(cfg: Any, org_name: str) -> tuple[int, str]:
+    if org_name == "AUT Cohort":
+        return get_group_chat_info("aut_cohort", cfg.aut_group_chat_id, cfg.aut_invite_link)
+    else:
+        return get_group_chat_info("yuqori_chirchiq", cfg.group_chat_id, cfg.invite_link)
+
+
 def register_user(
     *,
     user_id: int,
@@ -156,13 +204,14 @@ def register_user(
     occupation: str,
     photo_file_id: str,
     bio: str,
+    organization: str = "Yuqori Chirchiq TIM",
 ) -> bool:
     """Insert or update a user profile. Returns True when a new row was created."""
     cur = _execute(
         """
         INSERT INTO users (id, username, full_name, city, occupation, photo_file_id, bio,
-                           status, registered_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                           organization, status, registered_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
         ON CONFLICT(id) DO UPDATE SET
             username = excluded.username,
             full_name = excluded.full_name,
@@ -170,10 +219,11 @@ def register_user(
             occupation = excluded.occupation,
             photo_file_id = excluded.photo_file_id,
             bio = excluded.bio,
+            organization = excluded.organization,
             status = 'active',
             banned_at = NULL
         """,
-        (user_id, username, full_name, city, occupation, photo_file_id, bio, _now()),
+        (user_id, username, full_name, city, occupation, photo_file_id, bio, organization, _now()),
     )
     return cur.rowcount > 0
 

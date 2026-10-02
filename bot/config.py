@@ -29,8 +29,11 @@ class Config:
     review_chat_id: int
     admin_ids: frozenset[int]
     invite_link: str
-    database_path: Path
-    log_level: str
+    aut_group_chat_id: int = -1004381231808
+    aut_invite_link: str = "https://t.me/+JEgm3kwjxJtkMWZi"
+    mandatory_channel: str = "@itinsights_lab_manager"
+    database_path: Path = Path("insights_lab.db")
+    log_level: str = "INFO"
     timezone: str = "UTC"
     registration_messages: dict[str, str] = field(default_factory=dict)
 
@@ -89,6 +92,11 @@ def load_config(env_file: str | os.PathLike[str] | None = None) -> Config:
     if not invite_link:
         logger.warning("COHORT_GROUP_INVITE_LINK is not set; welcome messages will omit the link.")
 
+    aut_chat_id_raw = os.getenv("AUT_GROUP_CHAT_ID", "-1004381231808").strip()
+    aut_group_chat_id = _parse_chat_id(aut_chat_id_raw, "AUT_GROUP_CHAT_ID")
+    aut_invite_link = os.getenv("AUT_GROUP_INVITE_LINK", "https://t.me/+JEgm3kwjxJtkMWZi").strip()
+    mandatory_channel = os.getenv("MANDATORY_CHANNEL", "@itinsights_lab_manager").strip()
+
     database_path = Path(os.getenv("DATABASE_PATH", "insights_lab.db")).expanduser()
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
@@ -108,6 +116,9 @@ def load_config(env_file: str | os.PathLike[str] | None = None) -> Config:
         review_chat_id=review_chat_id,
         admin_ids=admin_ids,
         invite_link=invite_link,
+        aut_group_chat_id=aut_group_chat_id,
+        aut_invite_link=aut_invite_link,
+        mandatory_channel=mandatory_channel,
         database_path=database_path,
         log_level=log_level,
         timezone=timezone,
