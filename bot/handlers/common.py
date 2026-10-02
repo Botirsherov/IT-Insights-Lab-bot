@@ -172,7 +172,7 @@ async def setup_bot_commands(application: Application, cfg: "Config") -> None:
 def register(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command), group=2)
     application.add_handler(CommandHandler("myprofile", my_profile), group=2)
-    application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE_TO_CHAT_ID, handle_group_migration), group=0)
+    application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, handle_group_migration), group=0)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=90)
     # NOTE: on_error is already registered as error handler in main.create_application().
     # Do NOT call application.add_error_handler(on_error) here again — it would fire twice.
