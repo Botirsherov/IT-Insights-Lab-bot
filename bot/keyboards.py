@@ -16,11 +16,14 @@ def organization_keyboard() -> InlineKeyboardMarkup:
 
 
 def channel_sub_keyboard(channel_username: str) -> InlineKeyboardMarkup:
-    clean_username = channel_username.lstrip("@")
+    clean_username = channel_username.strip()
+    if "t.me/" in clean_username:
+        clean_username = clean_username.split("t.me/")[-1]
+    clean_username = clean_username.rstrip("/").lstrip("@")
     url = f"https://t.me/{clean_username}"
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(f"📢 Join {channel_username}", url=url)],
+            [InlineKeyboardButton(f"📢 Join @{clean_username}", url=url)],
             [InlineKeyboardButton("✅ I have joined", callback_data="check_channel_sub")],
         ]
     )

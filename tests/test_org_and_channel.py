@@ -66,7 +66,7 @@ def make_config() -> Config:
         invite_link="https://t.me/yuqori_group",
         aut_group_chat_id=-1004381231808,
         aut_invite_link="https://t.me/+JEgm3kwjxJtkMWZi",
-        mandatory_channel="@itinsights_lab_manager",
+        mandatory_channel="@itinsights_lab",
         database_path=Path(":memory:"),
         log_level="INFO",
     )
@@ -97,13 +97,31 @@ def temp_db(tmp_path):
 
 
 def test_channel_subscription_check_required(temp_db):
-    """User not subscribed to @itinsights_lab_manager must get CHANNEL_SUB prompt."""
+    """User not subscribed to @itinsights_lab must get CHANNEL_SUB prompt."""
     ctx = make_context(is_subbed=False)
     upd = msg_update("/start")
     state = asyncio.run(registration.start(upd, ctx))
     assert state == registration.CHANNEL_SUB
     reply_text = upd.message.replies[0][0]
-    assert "@itinsights_lab_manager" in reply_text
+    assert "@itinsights_lab" in reply_text
+
+
+def test_channel_normalization_and_keyboard():
+    from bot.config import _normalize_channel_username
+    from bot.keyboards import channel_sub_keyboard
+
+    assert _normalize_channel_username("https://t.me/itinsights_lab") == "@itinsights_lab"
+    assert _normalize_channel_username("https://t.me/itinsights_lab/") == "@itinsights_lab"
+    assert _normalize_channel_username("itinsights_lab") == "@itinsights_lab"
+    assert _normalize_channel_username("@itinsights_lab") == "@itinsights_lab"
+
+    kb = channel_sub_keyboard("@itinsights_lab")
+    assert kb.inline_keyboard[0][0].url == "https://t.me/itinsights_lab"
+    assert kb.inline_keyboard[0][0].text == "📢 Join @itinsights_lab"
+
+    kb_url = channel_sub_keyboard("https://t.me/itinsights_lab")
+    assert kb_url.inline_keyboard[0][0].url == "https://t.me/itinsights_lab"
+    assert kb_url.inline_keyboard[0][0].text == "📢 Join @itinsights_lab"
 
 
 def test_channel_subscription_check_callback_fails_if_not_joined(temp_db):

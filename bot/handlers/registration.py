@@ -33,7 +33,13 @@ async def check_channel_subscription(bot, channel: str, user_id: int) -> bool:
     """Check whether a user is subscribed to the mandatory channel."""
     if not channel:
         return True
-    ch = channel if channel.startswith("@") else f"@{channel}"
+    ch = channel.strip()
+    if "t.me/" in ch:
+        ch = ch.split("t.me/")[-1]
+    ch = ch.rstrip("/").lstrip("@")
+    if not ch:
+        return True
+    ch = f"@{ch}"
     try:
         member = await bot.get_chat_member(chat_id=ch, user_id=user_id)
         return member.status in ("creator", "administrator", "member", "restricted")

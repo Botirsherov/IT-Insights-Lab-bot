@@ -69,6 +69,7 @@ Edit `.env`:
 | `REVIEW_CHAT_ID` | numeric id of the reviewers/admin group |
 | `ADMIN_IDS` | comma-separated Telegram user ids, e.g. `123456789` |
 | `COHORT_GROUP_INVITE_LINK` | public invite link (`https://t.me/+...`) sent to new members |
+| `MANDATORY_CHANNEL` | mandatory channel username or link (`@itinsights_lab`) |
 | `DATABASE_PATH` | SQLite file path (default `insights_lab.db`) |
 | `LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 

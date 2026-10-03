@@ -20,6 +20,16 @@ class ConfigError(RuntimeError):
     """Raised when the environment configuration is invalid or incomplete."""
 
 
+def _normalize_channel_username(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if "t.me/" in raw:
+        raw = raw.split("t.me/")[-1]
+    raw = raw.rstrip("/").lstrip("@")
+    return f"@{raw}" if raw else ""
+
+
 @dataclass(frozen=True)
 class Config:
     """Validated runtime configuration."""
@@ -31,7 +41,7 @@ class Config:
     invite_link: str
     aut_group_chat_id: int = -1004381231808
     aut_invite_link: str = "https://t.me/+JEgm3kwjxJtkMWZi"
-    mandatory_channel: str = "@itinsights_lab_manager"
+    mandatory_channel: str = "@itinsights_lab"
     database_path: Path = Path("insights_lab.db")
     log_level: str = "INFO"
     timezone: str = "UTC"
@@ -95,7 +105,7 @@ def load_config(env_file: str | os.PathLike[str] | None = None) -> Config:
     aut_chat_id_raw = os.getenv("AUT_GROUP_CHAT_ID", "-1004381231808").strip()
     aut_group_chat_id = _parse_chat_id(aut_chat_id_raw, "AUT_GROUP_CHAT_ID")
     aut_invite_link = os.getenv("AUT_GROUP_INVITE_LINK", "https://t.me/+JEgm3kwjxJtkMWZi").strip()
-    mandatory_channel = os.getenv("MANDATORY_CHANNEL", "@itinsights_lab_manager").strip()
+    mandatory_channel = _normalize_channel_username(os.getenv("MANDATORY_CHANNEL", "@itinsights_lab"))
 
     database_path = Path(os.getenv("DATABASE_PATH", "insights_lab.db")).expanduser()
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
