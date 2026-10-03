@@ -18,7 +18,7 @@ from telegram.ext import (
 from .. import db
 from ..config import Config
 from ..keyboards import submission_kind_keyboard, task_pick_keyboard
-from ..utils import esc, profile_link, safe_edit
+from ..utils import esc, profile_link, require_subscription, safe_edit
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ def _ask_kind_text(task_id: int, title: str) -> str:
     )
 
 
+@require_subscription
 async def submit_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/submit or the [Submit Solution] button."""
     user_row = db.get_user(update.effective_user.id)

@@ -20,7 +20,7 @@ from telegram.ext import (
 from .. import db
 from ..config import Config
 from ..keyboards import confirm_task_keyboard, get_task_keyboard, skip_keyboard
-from ..utils import broadcast_header, esc, format_task_text, parse_deadline, safe_edit
+from ..utils import broadcast_header, esc, format_task_text, parse_deadline, require_subscription, safe_edit
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ async def _send_task_broadcast(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                                        reply_markup=keyboard)
 
 
+@require_subscription
 async def show_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -243,6 +244,7 @@ async def show_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text(text, reply_markup=get_task_keyboard(task_id), parse_mode=ParseMode.HTML)
 
 
+@require_subscription
 async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tasks = db.list_tasks()
     if not tasks:

@@ -34,6 +34,9 @@ class FakeBot:
     def __init__(self):
         self.sent = []
 
+    async def get_chat_member(self, chat_id, user_id):
+        return types.SimpleNamespace(status="member")
+
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text))
         return types.SimpleNamespace(message_id=1)

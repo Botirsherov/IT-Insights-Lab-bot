@@ -18,7 +18,8 @@ from telegram.ext import (
 
 from .. import db
 from ..config import Config
-from ..utils import esc
+from ..utils import esc, require_subscription
+from .registration import check_sub_callback
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +51,12 @@ _KNOWN_COMMANDS = {
 }
 
 
+@require_subscription
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_html(HELP_TEXT)
 
 
+@require_subscription
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = db.get_user(update.effective_user.id)
     if user is None:
@@ -172,6 +175,7 @@ async def setup_bot_commands(application: Application, cfg: "Config") -> None:
 def register(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command), group=2)
     application.add_handler(CommandHandler("myprofile", my_profile), group=2)
+    application.add_handler(CallbackQueryHandler(check_sub_callback, pattern=r"^check_channel_sub$"), group=2)
     application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, handle_group_migration), group=0)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=90)
     # NOTE: on_error is already registered as error handler in main.create_application().

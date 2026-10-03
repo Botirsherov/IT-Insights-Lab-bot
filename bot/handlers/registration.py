@@ -19,8 +19,18 @@ from telegram.ext import (
 
 from .. import db
 from ..config import Config
+from types import SimpleNamespace
+from ..utils import (
+    build_intro_card,
+    check_subscription,
+    esc,
+    require_subscription,
+    safe_edit,
+    welcome_text,
+)
+
+
 from ..keyboards import channel_sub_keyboard, occupation_keyboard, organization_keyboard
-from ..utils import build_intro_card, esc, welcome_text
 
 logger = logging.getLogger(__name__)
 
@@ -29,42 +39,10 @@ CHANNEL_SUB, ORGANIZATION, NAME, CITY, OCCUPATION, OCCUPATION_OTHER, PHOTO, BIO 
 _TEXT_ONLY = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
 
 
-async def check_channel_subscription(bot, channel: str, user_id: int) -> bool:
+async def check_channel_subscription(bot, channel: str | int, user_id: int) -> bool:
     """Check whether a user is subscribed to the mandatory channel."""
-    if not channel:
-        return True
-    ch = channel.strip()
-    if "t.me/" in ch:
-        ch = ch.split("t.me/")[-1]
-    ch = ch.rstrip("/").lstrip("@")
-    if not ch:
-        return True
-    ch = f"@{ch}"
-    try:
-        member = await bot.get_chat_member(chat_id=ch, user_id=user_id)
-        if member.status in ("creator", "administrator", "member"):
-            return True
-        if member.status == "restricted":
-            return getattr(member, "is_member", True)
-        return False
-    except Exception as exc:
-        msg = str(exc).lower()
-        logger.warning("Could not verify chat member for %s in %s: %s", user_id, ch, exc)
-        if (
-            "chat not found" in msg
-            or "bot is not a member" in msg
-            or "not enough rights" in msg
-            or "member list is inaccessible" in msg
-        ):
-            logger.error(
-                "CRITICAL: Bot cannot check channel subscription because it is not an administrator in %s. "
-                "Please add the bot as an Administrator in channel %s!",
-                ch,
-                ch,
-            )
-            # Fail open if bot lacks admin rights in channel so users are not blocked by missing permissions
-            return True
-        return False
+    ctx = SimpleNamespace(bot=bot, bot_data={"config": SimpleNamespace(mandatory_channel=channel)})
+    return await check_subscription(user_id, ctx)
 
 
 async def safe_send_photo_with_migration(
@@ -100,6 +78,7 @@ async def safe_send_photo_with_migration(
         raise
 
 
+@require_subscription
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/start — greet, branch on whether the user is already registered."""
     if update.effective_chat.type != "private":
@@ -132,17 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     context.user_data.clear()
 
-    # Step 0: Check mandatory channel subscription first
-    is_subbed = await check_channel_subscription(context.bot, cfg.mandatory_channel, u.id)
-    if not is_subbed:
-        await update.message.reply_html(
-            "📢 <b>Mandatory Channel Subscription</b>\n\n"
-            f"To register and use the IT Insights Lab bot, you must first join our channel: <b>{esc(cfg.mandatory_channel)}</b>.\n\n"
-            "After joining, tap the button below to verify.",
-            reply_markup=channel_sub_keyboard(cfg.mandatory_channel),
-        )
-        return CHANNEL_SUB
-
+    # Subscription check is enforced by @require_subscription decorator.
     await update.message.reply_html(
         "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
         "I'll register you for your cohort in a few quick steps.\n\n"
@@ -154,22 +123,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    if not query:
+        return CHANNEL_SUB
     u = update.effective_user
-    cfg: Config = context.bot_data["config"]
-    is_subbed = await check_channel_subscription(context.bot, cfg.mandatory_channel, u.id)
+    if not u:
+        return CHANNEL_SUB
+
+    is_subbed = await check_subscription(u.id, context)
     if not is_subbed:
         await query.answer("⚠️ You haven't joined the channel yet! Please join first.", show_alert=True)
         return CHANNEL_SUB
 
     await query.answer("✅ Verification successful!")
-    await query.edit_message_text(
-        "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
-        "I'll register you for your cohort in a few quick steps.\n\n"
-        "<b>Step 1/6 — Which organisation are you from?</b>",
-        reply_markup=organization_keyboard(),
-        parse_mode=ParseMode.HTML,
-    )
-    return ORGANIZATION
+
+    existing = db.get_user(u.id)
+    if existing is None:
+        await safe_edit(
+            query,
+            "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
+            "I'll register you for your cohort in a few quick steps.\n\n"
+            "<b>Step 1/6 — Which organisation are you from?</b>",
+            reply_markup=organization_keyboard(),
+        )
+        return ORGANIZATION
+    else:
+        await safe_edit(
+            query,
+            "✅ <b>Subscription verified!</b>\n\n"
+            "Thank you for joining our channel. You can now use all commands (/tasks, /submit, /myprofile)."
+        )
+        return ConversationHandler.END
 
 
 async def got_organization(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

@@ -20,14 +20,26 @@ class ConfigError(RuntimeError):
     """Raised when the environment configuration is invalid or incomplete."""
 
 
-def _normalize_channel_username(raw: str) -> str:
-    raw = raw.strip()
-    if not raw:
+def _normalize_channel_username(raw: str | int) -> str | int:
+    if isinstance(raw, int):
+        return raw
+    s = str(raw).strip()
+    if not s:
         return ""
-    if "t.me/" in raw:
-        raw = raw.split("t.me/")[-1]
-    raw = raw.rstrip("/").lstrip("@")
-    return f"@{raw}" if raw else ""
+    if s.lstrip("-").isdigit():
+        return int(s)
+    if "t.me/" in s:
+        s = s.split("t.me/")[-1]
+    s = s.rstrip("/").lstrip("@")
+    return f"@{s}" if s else ""
+
+
+REQUIRED_CHANNEL: str | int = _normalize_channel_username(
+    os.getenv("REQUIRED_CHANNEL")
+    or os.getenv("REQUIRED_CHANNEL_ID")
+    or os.getenv("MANDATORY_CHANNEL")
+    or "@itinsights_lab"
+)
 
 
 @dataclass(frozen=True)
@@ -105,7 +117,13 @@ def load_config(env_file: str | os.PathLike[str] | None = None) -> Config:
     aut_chat_id_raw = os.getenv("AUT_GROUP_CHAT_ID", "-1004381231808").strip()
     aut_group_chat_id = _parse_chat_id(aut_chat_id_raw, "AUT_GROUP_CHAT_ID")
     aut_invite_link = os.getenv("AUT_GROUP_INVITE_LINK", "https://t.me/+JEgm3kwjxJtkMWZi").strip()
-    mandatory_channel = _normalize_channel_username(os.getenv("MANDATORY_CHANNEL", "@itinsights_lab"))
+    raw_channel = (
+        os.getenv("REQUIRED_CHANNEL")
+        or os.getenv("REQUIRED_CHANNEL_ID")
+        or os.getenv("MANDATORY_CHANNEL")
+        or "@itinsights_lab"
+    )
+    mandatory_channel = _normalize_channel_username(raw_channel)
 
     database_path = Path(os.getenv("DATABASE_PATH", "insights_lab.db")).expanduser()
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()

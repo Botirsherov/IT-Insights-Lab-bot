@@ -15,16 +15,17 @@ def organization_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def channel_sub_keyboard(channel_username: str) -> InlineKeyboardMarkup:
-    clean_username = channel_username.strip()
+def channel_sub_keyboard(channel_username: str | int = "@itinsights_lab") -> InlineKeyboardMarkup:
+    clean_username = str(channel_username).strip()
     if "t.me/" in clean_username:
         clean_username = clean_username.split("t.me/")[-1]
     clean_username = clean_username.rstrip("/").lstrip("@")
-    url = f"https://t.me/{clean_username}"
+    url = f"https://t.me/{clean_username}" if clean_username else "https://t.me/itinsights_lab"
+    btn_text = f"📢 Join @{clean_username}" if clean_username else "📢 Join Channel"
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(f"📢 Join @{clean_username}", url=url)],
-            [InlineKeyboardButton("✅ I have joined", callback_data="check_channel_sub")],
+            [InlineKeyboardButton(btn_text, url=url)],
+            [InlineKeyboardButton("✅ Check Again", callback_data="check_channel_sub")],
         ]
     )
 

@@ -5,13 +5,99 @@ import csv
 import html
 import io
 import logging
+from functools import wraps
 from datetime import datetime
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from telegram import Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
+from telegram.ext import ContextTypes
+
+from .config import REQUIRED_CHANNEL, _normalize_channel_username
 
 logger = logging.getLogger(__name__)
+
+
+async def check_subscription(user_id: int, context: Any) -> bool:
+    """Helper to verify if user is subscribed to REQUIRED_CHANNEL.
+
+    Considers user subscribed if member.status is in ['member', 'administrator', 'creator'].
+    Catches TelegramError/BadRequest, logs explicit warning, and returns False.
+    """
+    cfg = None
+    if hasattr(context, "bot_data") and isinstance(context.bot_data, dict):
+        cfg = context.bot_data.get("config")
+
+    raw_channel = getattr(cfg, "mandatory_channel", None) if cfg else None
+    if not raw_channel:
+        raw_channel = REQUIRED_CHANNEL
+
+    channel = _normalize_channel_username(raw_channel)
+    if not channel:
+        return True
+
+    bot = getattr(context, "bot", context)
+    try:
+        member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+        status = getattr(member.status, "value", member.status)
+        if status in ("member", "administrator", "creator", "owner"):
+            return True
+        if status == "restricted":
+            return getattr(member, "is_member", False)
+        return False
+    except (TelegramError, BadRequest, Exception) as exc:
+        logger.warning(
+            "CRITICAL: Failed to query channel subscription for user_id=%s on channel %s: %s. "
+            "Please ensure the bot is added as an Administrator in channel %s!",
+            user_id,
+            channel,
+            exc,
+            channel,
+        )
+        return False
+
+
+def require_subscription(func: Callable) -> Callable:
+    """Decorator to enforce mandatory channel subscription before executing a handler."""
+    @wraps(func)
+    async def wrapper(update: Update | Any, context: ContextTypes.DEFAULT_TYPE | Any, *args, **kwargs):
+        u = getattr(update, "effective_user", None)
+        if not u:
+            return await func(update, context, *args, **kwargs)
+
+        cb = getattr(update, "callback_query", None)
+        if cb and getattr(cb, "data", None) == "check_channel_sub":
+            return await func(update, context, *args, **kwargs)
+
+        is_subbed = await check_subscription(u.id, context)
+        if not is_subbed:
+            cfg = context.bot_data.get("config") if hasattr(context, "bot_data") and isinstance(context.bot_data, dict) else None
+            raw_channel = getattr(cfg, "mandatory_channel", None) if cfg else None
+            if not raw_channel:
+                raw_channel = REQUIRED_CHANNEL
+            channel = _normalize_channel_username(raw_channel)
+            from .keyboards import channel_sub_keyboard
+            keyboard = channel_sub_keyboard(channel)
+            prompt = (
+                "📢 <b>Mandatory Channel Subscription</b>\n\n"
+                f"To use the IT Insights Lab bot, you must first join our channel: <b>{esc(str(channel))}</b>.\n\n"
+                "After joining, tap the button below to verify."
+            )
+
+            msg = getattr(update, "message", None)
+            if cb:
+                if hasattr(cb, "answer"):
+                    await cb.answer("⚠️ Subscription required! Please join the channel first.", show_alert=True)
+                await safe_edit(cb, prompt, reply_markup=keyboard)
+            elif msg:
+                await msg.reply_html(prompt, reply_markup=keyboard)
+
+            return 0  # CHANNEL_SUB state / 0
+
+        return await func(update, context, *args, **kwargs)
+
+    return wrapper
 
 
 def esc(value: Any) -> str:
