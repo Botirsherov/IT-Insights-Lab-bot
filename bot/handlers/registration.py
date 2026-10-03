@@ -24,7 +24,6 @@ from ..utils import (
     build_intro_card,
     check_subscription,
     esc,
-    require_subscription,
     safe_edit,
     welcome_text,
 )
@@ -78,7 +77,6 @@ async def safe_send_photo_with_migration(
         raise
 
 
-@require_subscription
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/start — greet, branch on whether the user is already registered."""
     if update.effective_chat.type != "private":
@@ -87,8 +85,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             f"→ @{(await context.bot.get_me()).username}"
         )
         return ConversationHandler.END
+
     u = update.effective_user
     cfg: Config = context.bot_data["config"]
+
+    # ── Mandatory channel gate ────────────────────────────────────────────────
+    # Check whether the user has joined the required channel BEFORE anything
+    # else.  If they haven't (or the check fails), show the join prompt and
+    # park the conversation in the CHANNEL_SUB state.
+    is_subbed = await check_subscription(u.id, context)
+    if not is_subbed:
+        raw_channel = getattr(cfg, "mandatory_channel", None) or "@itinsights_lab"
+        from ..keyboards import channel_sub_keyboard as _csub_kb
+        keyboard = _csub_kb(raw_channel)
+        await update.message.reply_html(
+            "📢 <b>Mandatory Channel Subscription</b>\n\n"
+            f"To use the IT Insights Lab bot you must first join our channel: "
+            f"<b>{esc(str(raw_channel))}</b>.\n\n"
+            "After joining, tap the button below to verify.",
+            reply_markup=keyboard,
+        )
+        return CHANNEL_SUB
+    # ─────────────────────────────────────────────────────────────────────────
+
     existing = db.get_user(u.id)
     if existing is not None:
         if existing["status"] == "banned":
@@ -111,7 +130,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     context.user_data.clear()
 
-    # Subscription check is enforced by @require_subscription decorator.
     await update.message.reply_html(
         "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
         "I'll register you for your cohort in a few quick steps.\n\n"
