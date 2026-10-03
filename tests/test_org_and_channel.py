@@ -164,6 +164,16 @@ def test_channel_subscription_check_callback_proceeds_when_joined(temp_db):
     assert "Step 1/6" in edited[0][0]
 
 
+def test_channel_subscription_bot_not_admin_fallback():
+    class ErrorBot:
+        async def get_chat_member(self, chat_id, user_id):
+            raise BadRequest("Bad Request: chat not found")
+
+    res = asyncio.run(registration.check_channel_subscription(ErrorBot(), "@itinsights_lab", 777))
+    assert res is True  # Fails open so users are not permanently blocked when bot is not admin in channel
+
+
+
 def test_aut_cohort_routing_and_invite_link(temp_db):
     """AUT Cohort user gets intro sent to AUT group and gets AUT invite link."""
     ctx = make_context(is_subbed=True)

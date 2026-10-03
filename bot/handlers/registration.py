@@ -42,9 +42,28 @@ async def check_channel_subscription(bot, channel: str, user_id: int) -> bool:
     ch = f"@{ch}"
     try:
         member = await bot.get_chat_member(chat_id=ch, user_id=user_id)
-        return member.status in ("creator", "administrator", "member", "restricted")
+        if member.status in ("creator", "administrator", "member"):
+            return True
+        if member.status == "restricted":
+            return getattr(member, "is_member", True)
+        return False
     except Exception as exc:
+        msg = str(exc).lower()
         logger.warning("Could not verify chat member for %s in %s: %s", user_id, ch, exc)
+        if (
+            "chat not found" in msg
+            or "bot is not a member" in msg
+            or "not enough rights" in msg
+            or "member list is inaccessible" in msg
+        ):
+            logger.error(
+                "CRITICAL: Bot cannot check channel subscription because it is not an administrator in %s. "
+                "Please add the bot as an Administrator in channel %s!",
+                ch,
+                ch,
+            )
+            # Fail open if bot lacks admin rights in channel so users are not blocked by missing permissions
+            return True
         return False
 
 
@@ -135,7 +154,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     u = update.effective_user
     cfg: Config = context.bot_data["config"]
     is_subbed = await check_channel_subscription(context.bot, cfg.mandatory_channel, u.id)
@@ -143,6 +161,7 @@ async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("⚠️ You haven't joined the channel yet! Please join first.", show_alert=True)
         return CHANNEL_SUB
 
+    await query.answer("✅ Verification successful!")
     await query.edit_message_text(
         "🎓 <b>Welcome to IT Insights Lab!</b>\n\n"
         "I'll register you for your cohort in a few quick steps.\n\n"
